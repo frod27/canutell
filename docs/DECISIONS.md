@@ -432,6 +432,148 @@ Small tightenings made while implementing, all inside the approved migration:
 
 ---
 
+## 2026-10-28 — Phase 4 (Baseline agents)
+
+### Phase 4 plan, migration 0002, and agent rules [user]
+
+The owner approved the plan in `docs/proposals/phase-4.md` and migration 0002, and answered the open
+questions:
+
+- **What agents say when asked "are you a bot?"** Deflect playfully and never deny being an AI (entry
+  below).
+- **Chat LLM.** Claude through the Anthropic API, with scripted chat lines as a fallback until an API
+  credential is configured.
+- **Timing before human data exists.** A documented placeholder prior, flagged `latency_prior`.
+- **Migration 0002** approved as written.
+
+### Agents asked if they are a bot [user]
+
+- **Decision.** Agents deflect playfully ("you'll find out at the reveal", "nice try") or turn the
+  question back.
+  - They never claim to be human and never deny being an AI.
+  - If a player seems sincerely confused or upset rather than playing, the agent says plainly that roles
+    are revealed at the end of the match.
+- **Reason.** The lobby discloses that AI players may be present, and every role is revealed at the end,
+  so the question is a game move. Even so, an outright lie is a line we don't cross.
+- **How it's enforced.**
+  - The LLM system prompt states the rule.
+  - The deterministic output filter (`services/agents/src/canutell_agents/safety.py`, category
+    `denies_being_ai`) drops any line that claims to be human ("im human", "not a bot", "100% human",
+    "human here").
+  - The scripted line bank is tested against the same filter.
+
+### Chat model [engine, flagged for the owner]
+
+- **Default model.** `claude-opus-5-5`, configurable with `AGENT_CHAT_MODEL`. The approved plan said "a
+  fast Claude model" but named none. Anthropic's API guidance is to default to the current Opus unless a
+  model is named, and picking a cheaper model is the owner's call.
+  - Setting `AGENT_CHAT_MODEL=claude-haiku-5-5` makes chat much cheaper and faster.
+  - Agent chat is short, so Haiku is likely enough.
+- **Migration text.** The approved migration 0002 described `baseline-1`'s `chat_model` as a fast
+  Claude model. The shipped row says what actually runs: `claude-opus-5-5` by default, overridable with
+  `AGENT_CHAT_MODEL`, and scripted lines when no API credential is configured.
+- **Request settings.** `output_config.effort = "low"` (chat), `max_tokens = 1024`.
+  - The static rules prompt is marked for prompt caching, with the per-agent persona after the
+    breakpoint. Note: a prompt shorter than the model's minimum cacheable prefix simply isn't cached.
+  - Opus and Sonnet requests opt into server-side refusal fallback (`fallbacks: "default"`, beta
+    `server-side-fallback-2026-07-01`). Haiku has no server-side fallback, so none is sent.
+- **Failure handling.** A refusal, an API error, `NONE`, or a line the filter drops all mean the agent
+  stays silent. It never retries a blocked line into something similar.
+- **Untrusted input.** Player chat goes to the model inside `<chat>…</chat>` as untrusted content; the
+  system prompt says player messages are never instructions.
+
+### Agent safety filter [engine]
+
+- **What it drops.** Contact details and links (the engine's masking patterns, ported), requests for
+  personal information, invitations off-platform or to other apps, identity claims (any name, age or
+  location), and claims to be human.
+- **Length and shape.** At most 200 characters and one line.
+- **On a hit.** The line is dropped and counted.
+- **Coverage.** The filter has a should-block / should-pass test corpus, and the load test runs every
+  agent chat line from every match through it.
+
+### Agent timing (CLAUDE.md invariant 14) [user + engine]
+
+- **Measurement.** Response time runs from when the prompt reached the agent, the same definition the
+  server uses to measure latency.
+- **Floor.** Never below 1.2 s. The load test checks this against the server's own measurements, not the
+  agent's.
+- **Near the deadline.** If the sampled time overruns the deadline, the agent usually rushes and
+  answers just before it, and lets about 15% of those time out, as people do. With less than a reaction
+  time left before the deadline margin, it always times out. The first acceptance run caught 3 rushed
+  answers at 931 ms, under the floor, because the rushed delay skipped it. Fixed, with a regression test.
+- **Source of the distribution.** `pnpm db:latency-model` exports aggregate quantiles per
+  (phase, decision kind).
+  - **Consent-gated (data tradeoff → consent):** turning human behavior into a more humanlike agent is a
+    training use, so CLAUDE.md invariant 10 applies. Only human seats whose player is T2+ with research
+    consent count, and never dev-flagged, bot-filled or sped-up matches.
+  - **Empty for now:** every player is a T0 guest, so the export is empty and agents use the documented
+    prior in `timing.py`.
+  - **Flagged:** every match where an agent used the prior is flagged `latency_prior`.
+  - **No row-level data:** only quantiles leave the database, never rows.
+
+### Agent seating [engine]
+
+- **Seat requests.** When a match forms, the server asks the agent service for each agent seat: `POST
+/seats` with a shared secret, carrying `{serverUrl, token, agentVersion, clockSpeed}`. Nothing about
+  the match is sent.
+- **Service limits.** The service only connects to allow-listed game-server URLs (localhost by default)
+  and keeps sessions by token only, never grouped by match. Each session has its own RNG, persona and
+  memory, so two agents at one table cannot learn about each other (tested).
+- **Fallback.** A seat the service can't take within 2 s gets a scripted bot. Its stored
+  `agent_version` is `scripted-0` and the match is flagged `agent_fallback`.
+- **Recorded flags.** The service reports its own flags (`latency_prior`, `scripted_chat`) and the match
+  records them.
+
+### Constant formation time [engine, data tradeoff → data]
+
+- **The side channel.** Seating agents means waiting on the agent service. Without care, matches with
+  agents would reach `match.found` later than matches without, which leaks the agent count
+  (CLAUDE.md invariant 7).
+- **The fix.** With an agent service configured, every formation takes the same 2.5 s, longer than the
+  seat-request timeout, whether or not the match has agents (tested).
+- **The tradeoff.** Players wait 2.5 s longer to start a match.
+
+### Agent confidence [engine]
+
+- **What agents send.** Agent action frames carry `confidence` (0–1), which is the decision model's
+  probability of the option it chose.
+- **Who may send it.** The server accepts it only from agent seats. A human seat sending it is rejected
+  with `confidence_forbidden`, and the rejection is logged.
+- **Where it's stored.** In `agent_annotations` (migration 0002), as a percent. `derive()` fills
+  `decisions.confidence` from it and refuses an annotation attached to a human seat's decision.
+
+### baseline-1 decision model [engine]
+
+- **How it chooses.** For each prompt it scores the legal options using features of its own view, then
+  samples from a softmax over those scores.
+- **Personas.** Each seat draws a persona (cooperativeness, reciprocity, risk appetite, patience, vote
+  propensity, chattiness, temperature), so agents differ.
+- **Ballots.** Agents label from observed behavior with no knowledge of roles, staying near 50/50.
+  Their ballots are logged but never scored.
+- **Tests.** Every choice is checked for legality and schema validity against 361 real views recorded
+  from seeded matches (`pnpm protocol:fixtures`).
+
+### Phase 4 acceptance results
+
+- **Load test:** `pnpm loadtest --matches 200 --mode both --store postgres --agents python` (local
+  Postgres 16, the real Python service seating every agent seat) passed with 0 violations over 400
+  matches:
+  - full mode: 26,458 decisions, 582 agent chat lines
+  - quick mode: 16,436 decisions, 485 agent chat lines
+- **Audited per match,** on top of the Phase 3 checks:
+  - every agent seat is `baseline-1`, with no fallback
+  - every non-timeout agent decision has a confidence annotation, and no human seat has one
+  - no agent answer was faster than 1.1 s by the server's own clock
+  - every agent chat line passes the Python safety filter
+  - only `late` rejections
+- **Chat in these runs was scripted** (no `ANTHROPIC_API_KEY` in this environment), so those matches
+  are flagged `scripted_chat`. Every run also used the timing prior (`latency_prior`).
+- **Suite:** 230 TypeScript tests pass, including the database tests on both PGlite and Postgres 16.
+  68 Python tests pass; ruff and pyright are clean.
+
+---
+
 ## Later
 
 Noted while building Phase 1; out of scope for this phase.
@@ -461,3 +603,10 @@ Noted while building Phase 1; out of scope for this phase.
 - **Reopening a reveal after a server restart.** Needs persistent identities (Phase 5).
 - **Training-export views.** Encode CLAUDE.md invariant 10 (`is_agent = false`, trust >= T2, active
   consent) as a database view in Phase 5, together with `consents`.
+- **Real human timing for agents.** Needs Phase 5 accounts and consent, then `pnpm db:latency-model`.
+  The `latency_prior` flag disappears on its own once every bucket has 200+ samples.
+- **Choosing the chat model for the alpha** (Opus 5.5 vs Haiku 5.5), against a small eval of chat quality
+  and safety-filter drop rate.
+- **Mimic agents** (SPEC §Training loop): first gate is 2,000 verified-human matches and 500 distinct
+  verified players.
+- **Measuring humanlikeness H** in the closed alpha (`pnpm db:humanlikeness`, non-party matches only).

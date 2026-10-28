@@ -1,7 +1,9 @@
 # Phase 4 proposal: Baseline agents with human-like timing
 
-Status: **draft for approval.** Nothing is built yet. This needs approval of the plan, of migration 0002,
-and answers to the open questions at the end.
+Status: **approved 2026-10-28 and implemented.** Owner answers: deflect, never deny; Claude chat with a
+scripted fallback; placeholder timing prior; migration 0002 as written. The shipped migration differs
+only in the `chat_model` description of `baseline-1` (see DECISIONS.md "Chat model"). Results are in
+DECISIONS.md "Phase 4 acceptance results".
 
 ## Goal
 

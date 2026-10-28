@@ -5,13 +5,15 @@ gamble and vote, then label every other player as human or agent. Rules and data
 [`docs/SPEC.md`](docs/SPEC.md). Build contract: [`CLAUDE.md`](CLAUDE.md). Decisions:
 [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
-**Current phase: 3 — event log, schema, reveal screen** (Phases 1–2 are complete).
+**Current phase: 4 — baseline agents** (Phases 1–3 are complete).
 
 ```sh
 pnpm install
 pnpm test                                    # all unit + integration tests
 pnpm sim --matches 10000 --mode full         # engine simulator (also --mode quick | both)
 pnpm loadtest --matches 200 --mode both      # real matches over WebSockets, fully audited
+pnpm loadtest --agents python                # same, with the Python agent service in every agent seat
+pnpm agents:test && pnpm agents:lint         # Python agent service (needs uv)
 pnpm typecheck && pnpm lint && pnpm format:check
 ```
 
@@ -38,23 +40,25 @@ pnpm db:migrate                       # apply supabase/migrations/NNNN_*.sql (th
 pnpm db:status                        # applied / pending migrations
 pnpm db:derive [--match ID]           # rebuild derived tables from the log
 pnpm db:purge --flag phase3 --yes     # privacy deletion of pre-Phase-5 dev data
+pnpm db:latency-model --out services/agents/data/latency.json   # human timing model for agents (consented T2+ only)
+pnpm db:humanlikeness                 # H per agent version (SPEC §Agents)
 pnpm loadtest --store postgres        # load test, plus database-vs-log and HTTP reveal checks
 TEST_DATABASE_URL=postgres://... pnpm test   # run DB tests on real Postgres (default: in-process PGlite)
 ```
 
 ## Layout
 
-| Path                  | Status      | What                                                                                           |
-| --------------------- | ----------- | ---------------------------------------------------------------------------------------------- |
-| `packages/protocol`   | built       | zod schemas: config, actions, events, per-seat views, WebSocket messages; rule constants       |
-| `packages/engine`     | built       | pure deterministic rules engine (depends only on zod and protocol)                             |
-| `packages/db`         | built       | migrations, Postgres match store, derivation of analysis tables, reveal queries, privacy purge |
-| `packages/bots`       | built       | scripted policies and a WebSocket bot client that plays through the public protocol            |
-| `apps/server`         | built       | server-authoritative game server: sessions, matchmaking, parties, timers, latency, JSONL logs  |
-| `apps/web`            | minimal     | Next.js 15 client: lobby, every prompt, chat, reveal; installable                              |
-| `sim/`                | built       | headless simulator and the independent log audit                                               |
-| `supabase/migrations` | built       | numbered SQL migrations (`0001_match_log.sql`)                                                 |
-| `services/agents`     | placeholder | Phase 4                                                                                        |
+| Path                  | Status  | What                                                                                           |
+| --------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `packages/protocol`   | built   | zod schemas: config, actions, events, per-seat views, WebSocket messages; rule constants       |
+| `packages/engine`     | built   | pure deterministic rules engine (depends only on zod and protocol)                             |
+| `packages/db`         | built   | migrations, Postgres match store, derivation of analysis tables, reveal queries, privacy purge |
+| `packages/bots`       | built   | scripted policies and a WebSocket bot client that plays through the public protocol            |
+| `apps/server`         | built   | server-authoritative game server: sessions, matchmaking, parties, timers, latency, JSONL logs  |
+| `apps/web`            | minimal | Next.js 15 client: lobby, every prompt, chat, reveal; installable                              |
+| `sim/`                | built   | headless simulator and the independent log audit                                               |
+| `supabase/migrations` | built   | numbered SQL migrations (`0001_match_log.sql`, `0002_baseline_agents.sql`)                     |
+| `services/agents`     | built   | Python agent service: `baseline-1` plays agent seats over the public protocol                  |
 
 ## Engine API
 
@@ -100,10 +104,13 @@ Any violation sets exit code 1.
 - **Latency** is measured on the server, from when a prompt reaches the seat's socket to when its
   choice arrives. Client timestamps are stored, never trusted.
 - **Matchmaking** draws the agent count before humans gather and shows no queue counts. Parties
-  (private codes) are tagged `is_party`. Agent seats are filled by scripted bots over the same protocol
-  until Phase 4.
-- **Every match is logged:** meta, events, inputs, timings, connections and rejections. Phase 2 matches
-  are flagged as non-research data. See `docs/DECISIONS.md` for the reasoning behind each choice.
+  (private codes) are tagged `is_party`.
+- **Agent seats** are played by the Python agent service (`services/agents`) when `AGENT_SERVICE_URL` and
+  `AGENT_SERVICE_SECRET` are set, over the same protocol as humans. Otherwise, or if the service fails,
+  a scripted bot plays the seat and the match is flagged. Match formation takes a constant 2.5 s
+  whether or not agents are seated, so its timing says nothing about the agent count.
+- **Every match is logged:** meta, events, inputs, timings, connections and rejections. Matches before the
+  alpha are flagged with their build phase (`phase2` to `phase4`) as non-research data. See `docs/DECISIONS.md` for the reasoning behind each choice.
 
 ## Data
 
