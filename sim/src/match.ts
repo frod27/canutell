@@ -21,7 +21,7 @@ import {
   type SeatId,
   type TimedPhase,
 } from '@canutell/protocol';
-import { POLICIES, POLICY_NAMES, chatAction, type PolicyName } from './policies';
+import { POLICIES, POLICY_NAMES, chatAction, type PolicyName } from '@canutell/bots';
 
 export interface SimMatchOptions {
   baseSeed: string;

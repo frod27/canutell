@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@canutell/engine": "workspace:*",
-    "@canutell/protocol": "workspace:*"
+    "@canutell/protocol": "workspace:*",
+    "@canutell/bots": "workspace:*"
   }
 }

@@ -1,0 +1,18 @@
+{
+  "name": "@canutell/bots",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Scripted bot policies and a WebSocket bot client that plays through the public protocol.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@canutell/engine": "workspace:*",
+    "@canutell/protocol": "workspace:*",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}

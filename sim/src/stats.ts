@@ -1,7 +1,7 @@
 import type { Mode } from '@canutell/protocol';
 import type { Violation } from './audit';
 import type { SimMatchResult } from './match';
-import { POLICY_NAMES, type PolicyName } from './policies';
+import { POLICY_NAMES, type PolicyName } from '@canutell/bots';
 
 interface PolicyStats {
   seats: number;
