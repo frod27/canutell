@@ -34,7 +34,29 @@ export function Match({ game }: { game: Game }) {
   const view = game.state.view;
   const secs = useCountdown(view?.deadline ?? null, game.state.clockOffset);
   if (!view) return <section className="card">Joining match…</section>;
-  if (view.phase === 'reveal') return <Reveal view={view} onDone={game.leaveMatch} />;
+  if (view.phase === 'reveal' && view.reveal) {
+    const myStakes = [
+      ...view.stakesSent.map((s) => ({ ...s, from: view.seat })),
+      ...view.stakesReceived.map((s) => ({ ...s, to: view.seat })),
+    ].map((s) => ({
+      stakeId: s.stakeId,
+      round: s.round,
+      from: s.from,
+      to: s.to,
+      sent: s.sent,
+      received: s.received,
+      returned: s.returned,
+    }));
+    return (
+      <Reveal
+        matchId={view.matchId}
+        seat={view.seat}
+        reveal={view.reveal}
+        myStakes={myStakes}
+        onDone={game.leaveMatch}
+      />
+    );
+  }
   const exiled = view.self.exiledRound !== null;
 
   return (

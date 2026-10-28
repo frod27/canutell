@@ -27,7 +27,7 @@ export interface GameState {
 
 const TOKEN_KEY = 'canutell.token';
 
-function readToken(): string | null {
+export function readToken(): string | null {
   try {
     return localStorage.getItem(TOKEN_KEY);
   } catch {
@@ -40,6 +40,11 @@ function writeToken(token: string): void {
   } catch {
     /* private mode: the session simply won't survive a reload */
   }
+}
+
+/** HTTP base of the game server (same host and port as the WebSocket). */
+export function serverHttpUrl(): string {
+  return serverUrl().replace(/^ws/, 'http');
 }
 
 export function serverUrl(): string {

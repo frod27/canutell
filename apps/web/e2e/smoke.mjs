@@ -1,6 +1,7 @@
 // Browser smoke test: lobby → quick match → act in every phase type → Reveal, through the real UI.
 // Needs a running server with dev bot fill (e.g. CLOCK_SPEED=10 FILL_BOTS_MS=500 pnpm serve) and the web
-// app (pnpm --filter @canutell/web start). Usage: node apps/web/e2e/smoke.mjs [url] [screenshotDir]
+// app (pnpm --filter @canutell/web start). With EXPECT_DB=1 (server has DATABASE_URL) it also reopens the
+// reveal from the database via its permanent link. Usage: node apps/web/e2e/smoke.mjs [url] [screenshotDir]
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -49,10 +50,30 @@ while (Date.now() < deadline) {
   await page.waitForTimeout(300);
 }
 await page.getByRole('heading', { name: 'Reveal' }).waitFor({ timeout: 5000 });
+await page.getByRole('heading', { name: 'Your ballot' }).waitFor();
 await shot('4-reveal');
-const rows = await page.locator('tbody tr').count();
+const norm = (t) => t.replace('Back to lobby', '').replace(/\s+/g, ' ').trim();
+const liveText = norm(await page.locator('main').innerText());
+
+// Reopen from the database through the permanent link; a browser without the player's token is refused.
+let reopened = null;
+if (process.env.EXPECT_DB === '1') {
+  await page.getByRole('link', { name: 'Permanent link to this reveal' }).click();
+  await page.waitForURL(/\/match\//);
+  await page.getByRole('heading', { name: 'Your ballot' }).waitFor({ timeout: 10000 });
+  await shot('5-reopened');
+  const dbText = norm(await page.locator('main').innerText());
+  if (shots)
+    (await import('node:fs')).writeFileSync(
+      `${shots}/texts.json`,
+      JSON.stringify({ liveText, dbText }, null, 1),
+    );
+  reopened = { url: page.url(), sameAsLive: dbText === liveText };
+  const stranger = await (await browser.newContext()).newPage();
+  await stranger.goto(page.url());
+  await stranger.getByText(/only visible to players from that match/).waitFor({ timeout: 10000 });
+  reopened.strangerRefused = true;
+}
 await browser.close();
-console.log(
-  JSON.stringify({ reachedReveal: true, revealRows: rows, actedOn: [...seen].sort(), pageErrors: errors }),
-);
-if (rows !== 6 || errors.length) process.exit(1);
+console.log(JSON.stringify({ reachedReveal: true, actedOn: [...seen].sort(), reopened, pageErrors: errors }));
+if (errors.length || (reopened && !(reopened.sameAsLive && reopened.strangerRefused))) process.exit(1);
