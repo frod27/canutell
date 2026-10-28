@@ -85,7 +85,7 @@ Final score = coins + exile bonuses + ballot payoff.
   - q = confidence/100 for an `agent` label, or 1 − confidence/100 for a `human` label.
   - y = 1 if the target is an agent, else 0.
   - B = 40 × (0.75 − (q − y)²), rounded to the nearest integer, half away from zero.
-  - Range: +30 for a certain correct label, −10 for a certain wrong one, 0 at 50/50. The rule is strictly proper, so honest confidence maximizes expected payoff.
+  - Range: +30 for a certain correct label, −10 for a certain wrong one, +20 at 50/50 (either label, either role). Before rounding the rule is strictly proper, so honest confidence maximizes expected payoff; after rounding, the honest report is within 1 coin per label of the best expected payoff.
   - A blank label scores 0.
 - Agents are ranked separately and never appear on human leaderboards.
 

@@ -20,9 +20,9 @@ pick between data quality and convenience and say which way they went.
 - **Reason.** The formula is the strictly proper part, and properness is what makes confidence honest.
   Side effect: a 50% label strictly beats a blank (+20 vs 0), so players are pushed to fill every
   label, which means more ballot data.
-- **Follow-up.** Amend SPEC §Scoring to "+20 at 50/50". Note too that integer rounding makes the rule only
-  _approximately_ proper: the honest report is within 1 coin per label of the best expected payoff
-  (tested in `coin-math.test.ts`). The unrounded rule is exactly proper.
+- **Follow-up.** Done: SPEC §Scoring now says +20 at 50/50 and notes the rounding caveat. Integer
+  rounding makes the rule only _approximately_ proper: the honest report is within 1 coin per label of
+  the best expected payoff (tested in `coin-math.test.ts`). The unrounded rule is exactly proper.
 
 ### Exile bonus counts successful exiles only [user]
 
@@ -228,7 +228,6 @@ Noted while building Phase 1; out of scope for this phase.
 
 - **Choice revisions before the deadline.** Hesitation and "changed mind" data. Needs a rule decision
   (see "One submission per decision").
-- **SPEC text fix** for "0 at 50/50" (see "Ballot payoff at 50/50").
 - **Ruleset versioning in the engine,** so matches logged under an old `ruleset_version` stay replayable
   after rule changes.
 - **Parallel simulator** (worker threads). About 100 matches/s single-threaded, dominated by computing a
