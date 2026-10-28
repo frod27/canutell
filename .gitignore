@@ -10,3 +10,10 @@ data/
 .next/
 next-env.d.ts
 apps/server/out/
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+services/agents/data/latency.json

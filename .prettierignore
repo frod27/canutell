@@ -3,3 +3,4 @@ node_modules
 docs/SPEC.md
 CLAUDE.md
 apps/web/.next
+services/agents/.venv
