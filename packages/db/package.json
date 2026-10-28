@@ -1,0 +1,20 @@
+{
+  "name": "@canutell/db",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Postgres data layer: migrations, the append-only match log, derived tables, reveal queries.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@canutell/engine": "workspace:*",
+    "@canutell/protocol": "workspace:*",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@canutell/sim": "workspace:*",
+    "@electric-sql/pglite": "^0.5.13",
+    "@types/pg": "^8.23.1"
+  }
+}

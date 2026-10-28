@@ -18,7 +18,11 @@
     "serve": "tsx apps/server/src/main.ts",
     "serve:dev": "CLOCK_SPEED=1 FILL_BOTS_MS=5000 tsx apps/server/src/main.ts",
     "web": "pnpm --filter @canutell/web dev",
-    "web:build": "pnpm --filter @canutell/web build"
+    "web:build": "pnpm --filter @canutell/web build",
+    "db:migrate": "tsx packages/db/src/cli.ts migrate",
+    "db:status": "tsx packages/db/src/cli.ts status",
+    "db:derive": "tsx packages/db/src/cli.ts derive",
+    "db:purge": "tsx packages/db/src/cli.ts purge"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

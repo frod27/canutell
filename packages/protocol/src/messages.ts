@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { ActionSchema } from './actions';
 import { ModeSchema, PhaseSchema, SeatIdSchema, ServerTimeSchema } from './common';
-import { SeatViewSchema } from './views';
+import { RevealViewSchema, SeatViewSchema } from './views';
 
 // WebSocket frames between clients (humans, bots, agents) and the server. Every inbound frame is
 // zod-parsed by the server (CLAUDE.md "zod at every boundary"). Agents use exactly these frames
@@ -105,3 +105,29 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
 ]);
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
 export type ServerMessageOf<T extends ServerMessage['type']> = Extract<ServerMessage, { type: T }>;
+
+// ---------- HTTP: reopen a finished match's reveal ----------
+
+/**
+ * `GET /api/matches/:id/reveal` with `Authorization: Bearer <token>`. Answered only for a player who held
+ * a seat in that match; everyone else gets 404 (no hint that the match exists). Built from the database's
+ * derived tables (DECISIONS "Reveal from the database").
+ */
+export const MatchRevealResponseSchema = z.object({
+  matchId: z.string(),
+  mode: ModeSchema,
+  seat: SeatIdSchema,
+  reveal: RevealViewSchema,
+  myStakes: z.array(
+    z.object({
+      stakeId: z.string(),
+      round: z.number().int(),
+      from: SeatIdSchema,
+      to: SeatIdSchema,
+      sent: z.number().int(),
+      received: z.number().int(),
+      returned: z.number().int().nullable(),
+    }),
+  ),
+});
+export type MatchRevealResponse = z.infer<typeof MatchRevealResponseSchema>;
