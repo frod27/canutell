@@ -105,6 +105,9 @@ export class MatchRunner {
     if (frame.matchId !== this.matchId) return reject('wrong_match', 'not your current match');
     if (frame.action.seat !== seat) return reject('not_your_seat', `you are seat ${seat}`);
     if (this.ended) return reject('match_over', 'the match is over');
+    // Agent seats may report their decision model's confidence; nobody else may (DECISIONS "Agent confidence").
+    if (frame.confidence !== undefined && !this.meta.config.seats[seat]!.isAgent)
+      return reject('confidence_forbidden', 'only agent seats report confidence');
 
     const now = this.deps.clock.now();
     let t: Transition;
@@ -126,6 +129,16 @@ export class MatchRunner {
       receivedAt: now,
       clientSentAt: event.seat === seat ? frame.clientSentAt : null,
     }));
+    if (frame.confidence !== undefined) {
+      const decision = t.events.find((e) => e.type === 'decision' && e.seat === seat);
+      if (decision) {
+        this.deps.store.annotation(this.matchId, {
+          seq: decision.seq,
+          seat,
+          confidence: Math.round(frame.confidence * 100),
+        });
+      }
+    }
     reply({ type: 'action.ack', clientActionId: frame.clientActionId });
     this.broadcast();
   }

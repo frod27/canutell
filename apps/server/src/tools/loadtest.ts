@@ -1,3 +1,8 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { dirname, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BotClient, POLICY_NAMES, type BotResult } from '@canutell/bots';
 import {
@@ -17,6 +22,7 @@ import { auditMatch, type Violation } from '@canutell/sim';
 import { ScaledClock } from '../clock';
 import { startGameServer } from '../server';
 import { MemoryStore, type StoredMatch } from '../store';
+import { BASELINE_AGENT_VERSION, agentServiceSeater, type AgentSeater } from '../agent-service';
 
 // Phase 2 acceptance: real matches over real WebSockets, then an audit of everything the server logged.
 //
@@ -36,6 +42,12 @@ import { MemoryStore, type StoredMatch } from '../store';
 //   • the reveal rebuilt from derived tables equals the engine's reveal, for every match
 //   • derived rows reconcile with the log
 //   • GET /api/matches/:id/reveal answers a seated player correctly and refuses everyone else
+//
+// With --agents python, agent seats are played by the real Python agent service (services/agents), and:
+//   • every agent seat was played by baseline-1 (no fallback)
+//   • every non-timeout agent decision carries a confidence annotation; human seats never do
+//   • every agent response took at least the human minimum, as measured by the server (invariant 14)
+//   • every agent chat line passes the agent safety filter (invariant 13)
 
 const ROLE_LEAK = /isAgent|agentVersion|agentCount|scripted-0|targetIsAgent/;
 
@@ -54,8 +66,11 @@ function parse() {
       concurrency: { type: 'string', default: '100' },
       'timeout-pct': { type: 'string', default: '5' },
       store: { type: 'string', default: 'memory' },
+      agents: { type: 'string', default: 'scripted' },
     },
   });
+  if (values.agents !== 'scripted' && values.agents !== 'python')
+    throw new Error('--agents must be scripted or python');
   if (values.store !== 'memory' && values.store !== 'postgres')
     throw new Error('--store must be memory or postgres');
   if (values.store === 'postgres' && !process.env.DATABASE_URL)
@@ -67,6 +82,7 @@ function parse() {
     concurrency: Number(values.concurrency),
     timeoutPct: Number(values['timeout-pct']),
     store: values.store as 'memory' | 'postgres',
+    agents: values.agents as 'scripted' | 'python',
   };
 }
 
@@ -111,11 +127,14 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
     pg = new PostgresStore(sql, { onError: (id, e) => dbErrors.push(`${id}: ${String(e)}`) });
     reveals = dbRevealSource(sql);
   }
+  const agentService = o.agents === 'python' ? await startAgentService() : null;
   const server = await startGameServer({
     clock,
     store: pg ? tee(store, pg) : store,
     reveals,
     spawnBot: (args) => launch(args.url, args.token, undefined),
+    agentSeater: agentService?.seater,
+    formationDelayMs: 0, // throughput; the delay's own guarantee is tested in server.test.ts
   });
 
   const started = performance.now();
@@ -144,6 +163,7 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
     await auditRevealEndpoint(server.url, store, clients, fail);
   }
   await server.close();
+  agentService?.stop();
 
   // ---------- audit ----------
   const latencies: number[] = [];
@@ -161,6 +181,7 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
     }
   }
   for (const c of clients) auditFrames(c, fail);
+  if (o.agents === 'python') await auditAgents([...store.matches.values()], fail);
   if (sql) {
     for (const e of dbErrors) fail('db_write', e);
     for (const m of store.matches.values()) await auditDatabase(sql, m, fail);
@@ -180,6 +201,83 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   };
 }
 
+const AGENTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../services/agents');
+/** Never faster than this, as measured by the server (services/agents timing.py MIN_REACTION_MS). */
+const AGENT_MIN_REACTION_MS = 1_200;
+
+/** Start the real Python agent service on a free port. */
+async function startAgentService(): Promise<{ seater: AgentSeater; stop: () => void }> {
+  const secret = randomBytes(16).toString('hex');
+  const child: ChildProcess = spawn('uv', ['run', '--quiet', 'python', '-m', 'canutell_agents'], {
+    cwd: AGENTS_DIR,
+    env: { ...process.env, AGENT_SERVICE_SECRET: secret, AGENT_PORT: '0', AGENT_LOG_LEVEL: 'WARNING' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const port = await new Promise<number>((ok, fail) => {
+    const lines = createInterface({ input: child.stdout! });
+    lines.on('line', (line) => {
+      const m = /^AGENT_SERVICE_LISTENING (\d+)$/.exec(line.trim());
+      if (m) ok(Number(m[1]));
+    });
+    child.on('exit', (code) => fail(new Error(`agent service exited with ${code}`)));
+  });
+  return {
+    seater: agentServiceSeater({ url: `http://127.0.0.1:${port}`, secret, timeoutMs: 5_000 }),
+    stop: () => child.kill('SIGTERM'),
+  };
+}
+
+/** CLAUDE.md invariants 13–15, checked from what the server recorded. */
+async function auditAgents(
+  matches: StoredMatch[],
+  fail: (check: string, detail: string) => void,
+): Promise<void> {
+  const chat: string[] = [];
+  for (const m of matches) {
+    const id = m.meta.matchId;
+    const agentSeats = new Set(m.meta.config.seats.filter((s) => s.isAgent).map((s) => s.seatId));
+    for (const s of m.meta.config.seats) {
+      if (s.isAgent && s.agentVersion !== BASELINE_AGENT_VERSION)
+        fail('agent_version', `${id} seat ${s.seatId}: ${s.agentVersion}`);
+    }
+    if (m.meta.flags.includes('agent_fallback')) fail('agent_fallback', id);
+    const annotated = new Map(m.annotations.map((a) => [a.seq, a]));
+    for (const e of m.events) {
+      if (e.type === 'chat_message' && agentSeats.has(e.seat!)) chat.push(e.payload.text);
+      if (e.type !== 'decision') continue;
+      const a = annotated.get(e.seq);
+      if (!agentSeats.has(e.seat!)) {
+        if (a) fail('annotation_on_human', `${id} seq ${e.seq}`);
+        continue;
+      }
+      if (!e.payload.timedOut && (!a || a.confidence < 0 || a.confidence > 100))
+        fail('agent_confidence', `${id} seq ${e.seq}`);
+    }
+    for (const t of m.timings) {
+      if (
+        agentSeats.has(t.seat) &&
+        !t.timedOut &&
+        t.latencyMs !== null &&
+        t.latencyMs < AGENT_MIN_REACTION_MS - 100
+      )
+        fail('agent_too_fast', `${id} seq ${t.seq}: ${t.latencyMs} ms`);
+    }
+  }
+  agentChecks.chatLines = chat.length;
+  // The Python safety filter is the source of truth; run it over every agent line.
+  const child = spawn('uv', ['run', '--quiet', 'python', '-m', 'canutell_agents.safety'], {
+    cwd: AGENTS_DIR,
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  let out = '';
+  child.stdout.on('data', (d) => (out += String(d)));
+  child.stdin.end(chat.map((text) => JSON.stringify({ text })).join('\n') + '\n');
+  await new Promise((r) => child.on('close', r));
+  for (const line of out.split('\n').filter(Boolean)) fail('agent_chat_unsafe', line);
+}
+
+const agentChecks = { chatLines: 0, decisions: 0 };
+
 /** Writes every record to both stores (the load test compares them). */
 function tee(a: MatchStore, b: MatchStore): MatchStore {
   return {
@@ -189,6 +287,7 @@ function tee(a: MatchStore, b: MatchStore): MatchStore {
     timing: (id, r) => (a.timing(id, r), b.timing(id, r)),
     connection: (id, r) => (a.connection(id, r), b.connection(id, r)),
     rejection: (id, r) => (a.rejection(id, r), b.rejection(id, r)),
+    annotation: (id, r) => (a.annotation(id, r), b.annotation(id, r)),
     close: (id, st, at) => (a.close(id, st, at), b.close(id, st, at)),
     shutdown: async () => {
       await a.shutdown();
@@ -219,6 +318,7 @@ async function auditDatabase(
   same('timings', db.timings, m.timings);
   same('connections', db.connections, m.connections);
   same('rejections', db.rejections, m.rejections);
+  same('annotations', db.annotations, m.annotations);
   const state = replay(m.meta.config, m.meta.seed, m.inputs).state;
   same('reveal', await revealFromDb(sql, id), viewFor(state, 0).reveal);
   const [row] = await sql.query<{ n: number }>(
@@ -345,7 +445,7 @@ async function main(): Promise<number> {
       byCheck[v.check] ??= { n: 0, eg: v.detail };
       byCheck[v.check]!.n++;
     }
-    console.log(`CANUTELL load test — mode ${mode}, clock ×${o.speed}, store ${o.store}`);
+    console.log(`CANUTELL load test — mode ${mode}, clock ×${o.speed}, store ${o.store}, agents ${o.agents}`);
     console.log(
       `  ${r.matches} matches over WebSockets in ${r.seconds.toFixed(1)}s wall time (${r.clients} seated clients)`,
     );
@@ -362,6 +462,11 @@ async function main(): Promise<number> {
           `${dbChecks.httpReveals} HTTP reveals checked, ${dbChecks.httpRefusals} unauthorized requests refused`,
       );
       dbChecks.matches = dbChecks.httpReveals = dbChecks.httpRefusals = 0;
+    }
+    if (o.agents === 'python') {
+      console.log(
+        `  agents: baseline-1 in every agent seat; ${agentChecks.chatLines} agent chat lines safety-checked`,
+      );
     }
     console.log(`  VIOLATIONS: ${r.violations.length}${r.violations.length === 0 ? '  ✓' : '  ✗'}`);
     for (const [check, v] of Object.entries(byCheck)) console.log(`    ${check}: ${v.n}  e.g. ${v.eg}`);

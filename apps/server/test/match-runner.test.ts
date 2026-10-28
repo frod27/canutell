@@ -133,6 +133,26 @@ describe('MatchRunner — server-authoritative loop (CLAUDE.md invariant 5)', ()
     expect(t.stored().rejections.at(-1)).toMatchObject({ code: 'wrong_phase', engineCode: 'wrong_phase' });
   });
 
+  // DECISIONS "Agent confidence": only agent seats may report it; it is stored against the decision.
+  it('stores agent confidence for agent seats and rejects it from human seats', () => {
+    const t = setup([2]);
+    const frame = (seat: SeatId, confidence: number) => ({
+      type: 'action' as const,
+      matchId: 'm1',
+      clientActionId: `c${seat}`,
+      action: { type: 'invest' as const, seat, amount: 4 },
+      seenPhase: null,
+      clientSentAt: null,
+      confidence,
+    });
+    t.runner.handleAction(2, frame(2, 0.734));
+    t.runner.handleAction(1, frame(1, 0.5));
+    const decision = t.stored().events.find((e) => e.type === 'decision' && e.seat === 2)!;
+    expect(t.stored().annotations).toEqual([{ seq: decision.seq, seat: 2, confidence: 73 }]);
+    expect(t.stored().rejections.at(-1)).toMatchObject({ seat: 1, code: 'confidence_forbidden' });
+    expect(t.stored().events.some((e) => e.type === 'decision' && e.seat === 1)).toBe(false);
+  });
+
   it('measures latency on the server from prompt delivery to arrival (CLAUDE.md invariant 6)', () => {
     const t = setup();
     t.clock.advance(4_321);

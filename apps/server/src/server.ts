@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { BotClient, POLICY_NAMES } from '@canutell/bots';
 import type { RevealSource } from '@canutell/db';
+import type { AgentSeater } from './agent-service';
 import {
   AI_DISCLOSURE,
   ClientMessageSchema,
@@ -23,7 +24,7 @@ import type { MatchFlag, MatchMeta, MatchStore, SeatOccupant } from './store';
  * guests, so these matches are dev data: never research-eligible, purged before the closed alpha
  * (DECISIONS "Guest data before accounts").
  */
-export const BUILD_PHASE_FLAG = 'phase3' as const;
+export const BUILD_PHASE_FLAG = 'phase4' as const;
 
 /** Version label for scripted bots in agent seats until Phase 4 agents exist. */
 export const SCRIPTED_AGENT_VERSION = 'scripted-0';
@@ -53,6 +54,17 @@ export interface GameServerOptions {
   reveals?: RevealSource;
   /** Allowed origin for the HTTP API (CORS). Bearer tokens, no cookies, so `*` is the default. */
   corsOrigin?: string;
+  /**
+   * Seats agents from the agent service (services/agents). Without it — or when it fails for a seat — that
+   * seat gets a scripted bot (`scripted-0`), and a failure is flagged `agent_fallback`.
+   */
+  agentSeater?: AgentSeater;
+  /**
+   * Every match formation takes at least this long (real ms), whether or not it seats agents. Without it, the
+   * time from queue to `match.found` would reveal whether the server waited on the agent service — i.e.
+   * whether the match has agents (CLAUDE.md invariant 7). Default: 2500 when an agentSeater is set, else 0.
+   */
+  formationDelayMs?: number;
 }
 
 interface Player {
@@ -126,7 +138,12 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
 
   // ---------- match formation ----------
 
+  const formationDelayMs = o.formationDelayMs ?? (o.agentSeater ? 2_500 : 0);
   const onMatch = (req: MatchRequest) => {
+    void formMatch(req).catch((e) => log(`match formation failed: ${String(e)}`));
+  };
+
+  const formMatch = async (req: MatchRequest) => {
     const matchId = randomUUID();
     const seed = randomBytes(16).toString('hex');
     const bots: Player[] = [];
@@ -144,6 +161,30 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       const j = random.int(i + 1);
       [roster[i], roster[j]] = [roster[j]!, roster[i]!];
     }
+    // Ask the agent service for each agent seat before the match starts, so the stored agent_version is the
+    // one that actually plays. Any seat it cannot take gets a scripted bot instead.
+    const agentVersion = new Map<Player, string>();
+    const agentFlags = new Set<MatchFlag>();
+    const scripted: Player[] = [];
+    const settle = new Promise<void>((resolve) => setTimeout(resolve, formationDelayMs));
+    await Promise.all([
+      settle,
+      ...bots
+        .filter((b) => b.kind === 'agent')
+        .map(async (b) => {
+          const seat = o.agentSeater
+            ? await o.agentSeater({ serverUrl: url, token: b.token, clockSpeed: clock.speed })
+            : null;
+          if (seat) {
+            agentVersion.set(b, seat.agentVersion);
+            for (const f of seat.flags) agentFlags.add(f as MatchFlag);
+          } else {
+            agentVersion.set(b, SCRIPTED_AGENT_VERSION);
+            scripted.push(b);
+            if (o.agentSeater) agentFlags.add('agent_fallback');
+          }
+        }),
+    ]);
     const config: MatchConfig = {
       matchId,
       mode: req.mode,
@@ -151,12 +192,14 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       seats: roster.map((p, seat) => ({
         seatId: seat,
         isAgent: p.kind === 'agent',
-        agentVersion: p.kind === 'agent' ? SCRIPTED_AGENT_VERSION : null,
+        agentVersion: p.kind === 'agent' ? agentVersion.get(p)! : null,
       })),
     };
     const occupants: SeatOccupant[] = roster.map((p, seat) => ({ seat, kind: p.kind, playerId: p.playerId }));
     const flags: MatchFlag[] = [BUILD_PHASE_FLAG];
-    if (req.agents > 0) flags.push('scripted_agents');
+    if (scripted.length > 0) flags.push('scripted_agents');
+    if ([...agentVersion.values()].some((v) => v !== SCRIPTED_AGENT_VERSION)) flags.push('baseline_agents');
+    for (const f of [...agentFlags].sort()) flags.push(f);
     if (req.fillers > 0) flags.push('bot_fill');
     if (clock.speed !== 1) flags.push('sped_up');
     const meta: MatchMeta = {
@@ -180,12 +223,14 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       p.seat = seat;
     });
     runner.start();
+    // Everyone already connected (humans, and agents that answered the seat request quickly) is told now;
+    // anyone connecting later is attached by `hello`.
     for (const p of roster) {
-      if (p.kind !== 'human') continue;
+      if (!p.socket) continue;
       send(p, { type: 'match.found', matchId, seat: p.seat!, mode: req.mode, disclosure: AI_DISCLOSURE });
-      if (p.socket) runner.attach(p.seat!, link(p));
+      runner.attach(p.seat!, link(p));
     }
-    for (const b of bots)
+    for (const b of [...scripted, ...bots.filter((x) => x.kind === 'filler')])
       spawnBot({ url, token: b.token, kind: b.kind as 'agent' | 'filler', speed: clock.speed });
   };
 

@@ -17,3 +17,9 @@ export {
   type TimingRecord,
 } from './store';
 export { PromptTracker } from './prompt-tracker';
+export {
+  agentServiceSeater,
+  BASELINE_AGENT_VERSION,
+  type AgentSeater,
+  type AgentSeat,
+} from './agent-service';

@@ -345,3 +345,83 @@ describe('GET /api/matches/:id/reveal', () => {
     expect(res.status).toBe(501);
   });
 });
+
+describe('agent seating (Phase 4)', () => {
+  it('seats agents from the agent service, records their version and flags, and falls back per seat', async () => {
+    let calls = 0;
+    const clock = new ManualClock();
+    const store = new MemoryStore();
+    const spawned: string[] = [];
+    server = await startGameServer({
+      clock,
+      store,
+      agentWeights: [0, 0, 1],
+      formationDelayMs: 0,
+      spawnBot: (a) => spawned.push(a.kind),
+      // First seat: accepted by the service; second: the service fails → scripted fallback.
+      agentSeater: async () =>
+        ++calls === 1 ? { agentVersion: 'baseline-1', flags: ['latency_prior', 'scripted_chat'] } : null,
+    });
+    const players = [];
+    for (let i = 0; i < 4; i++) {
+      const c = await TestClient.connect(server.url);
+      clients.push(c);
+      c.send({ type: 'hello', token: null });
+      await c.wait('welcome');
+      players.push(c);
+    }
+    for (const c of players) c.send({ type: 'queue.join', mode: 'quick' });
+    const found = await players[0]!.wait('match.found');
+    const meta = (store as MemoryStore).matches.get(found.matchId)!.meta;
+    expect(
+      meta.config.seats
+        .filter((s) => s.isAgent)
+        .map((s) => s.agentVersion)
+        .sort(),
+    ).toEqual(['baseline-1', 'scripted-0']);
+    expect(meta.flags).toEqual([
+      'phase4',
+      'scripted_agents',
+      'baseline_agents',
+      'agent_fallback',
+      'latency_prior',
+      'scripted_chat',
+    ]);
+    expect(spawned).toEqual(['agent']); // only the fallback seat gets a scripted bot
+  });
+
+  it('formation takes the same time with or without agents (no timing side channel)', async () => {
+    const timeToMatch = async (weights: number[]) => {
+      const clock = new ManualClock();
+      server = await startGameServer({
+        clock,
+        store: new MemoryStore(),
+        agentWeights: weights,
+        formationDelayMs: 300,
+        spawnBot: () => {},
+        agentSeater: async () => ({ agentVersion: 'baseline-1', flags: [] }),
+      });
+      const players = [];
+      for (let i = 0; i < 6; i++) {
+        const c = await TestClient.connect(server.url);
+        clients.push(c);
+        c.send({ type: 'hello', token: null });
+        await c.wait('welcome');
+        players.push(c);
+      }
+      const t0 = performance.now();
+      for (const c of players) c.send({ type: 'queue.join', mode: 'quick' });
+      await players[0]!.wait('match.found');
+      const ms = performance.now() - t0;
+      for (const c of clients.splice(0)) c.close();
+      await server.close();
+      server = null;
+      return ms;
+    };
+    const none = await timeToMatch([1, 0, 0]);
+    const two = await timeToMatch([0, 0, 1]);
+    expect(none).toBeGreaterThanOrEqual(290);
+    expect(two).toBeGreaterThanOrEqual(290);
+    expect(Math.abs(none - two)).toBeLessThan(150);
+  });
+});

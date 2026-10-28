@@ -7,6 +7,7 @@ import {
   type RevealSource,
   type Sql,
 } from '@canutell/db';
+import { agentServiceSeater } from './agent-service';
 import { ScaledClock } from './clock';
 import { startGameServer } from './server';
 import { JsonlStore, type MatchStore } from './store';
@@ -20,6 +21,8 @@ import { JsonlStore, type MatchStore } from './store';
 //   FILL_BOTS_MS   dev only: fill waiting queues/parties with bots after this many ms (default off)
 //   AGENT_WEIGHTS  relative odds of 0,1,2 agents (default 1,1,1)
 //   CORS_ORIGIN    allowed origin for the HTTP API (default *)
+//   AGENT_SERVICE_URL / AGENT_SERVICE_SECRET
+//                  the Python agent service (services/agents). Without it, agent seats get scripted bots.
 
 const env = process.env;
 const speed = Number(env.CLOCK_SPEED ?? 1);
@@ -59,7 +62,18 @@ if (env.DATABASE_URL) {
   log(`match logs → ${dataDir} (JSONL; set DATABASE_URL for Postgres and reopenable reveals)`);
 }
 
+const agentSeater =
+  env.AGENT_SERVICE_URL && env.AGENT_SERVICE_SECRET
+    ? agentServiceSeater({ url: env.AGENT_SERVICE_URL, secret: env.AGENT_SERVICE_SECRET, log })
+    : undefined;
+log(
+  agentSeater
+    ? `agent seats → ${env.AGENT_SERVICE_URL}`
+    : 'agent seats → scripted bots (no AGENT_SERVICE_URL)',
+);
+
 const server = await startGameServer({
+  agentSeater,
   clock,
   store,
   reveals,

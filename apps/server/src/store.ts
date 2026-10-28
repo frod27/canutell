@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import type {
+  AnnotationRecord,
   ConnectionRecord,
   MatchMeta,
   MatchStatus,
@@ -21,6 +22,7 @@ import type { MatchInput } from '@canutell/engine';
 import type { MatchEvent } from '@canutell/protocol';
 
 export type {
+  AnnotationRecord,
   ConnectionRecord,
   MatchFlag,
   MatchMeta,
@@ -52,6 +54,7 @@ export class MemoryStore implements MatchStore {
       timings: [],
       connections: [],
       rejections: [],
+      annotations: [],
     });
   }
   events(id: string, events: readonly MatchEvent[]): void {
@@ -69,6 +72,9 @@ export class MemoryStore implements MatchStore {
   rejection(id: string, r: RejectionRecord): void {
     this.get(id).rejections.push(r);
   }
+  annotation(id: string, r: AnnotationRecord): void {
+    this.get(id).annotations.push(r);
+  }
   close(id: string, status: Exclude<MatchStatus, 'running'>, at: number): void {
     const m = this.get(id);
     m.meta.status = status;
@@ -77,7 +83,7 @@ export class MemoryStore implements MatchStore {
   async shutdown(): Promise<void> {}
 }
 
-const STREAMS = ['events', 'inputs', 'timings', 'connections', 'rejections'] as const;
+const STREAMS = ['events', 'inputs', 'timings', 'connections', 'rejections', 'annotations'] as const;
 type StreamName = (typeof STREAMS)[number];
 
 /**
@@ -134,6 +140,9 @@ export class JsonlStore implements MatchStore {
   rejection(id: string, r: RejectionRecord): void {
     this.write(id, 'rejections', r);
   }
+  annotation(id: string, r: AnnotationRecord): void {
+    this.write(id, 'annotations', r);
+  }
   close(id: string, status: Exclude<MatchStatus, 'running'>, at: number): void {
     const m = this.open_.get(id);
     if (!m) return;
@@ -169,6 +178,7 @@ export class JsonlStore implements MatchStore {
       timings: lines('timings'),
       connections: lines('connections'),
       rejections: lines('rejections'),
+      annotations: lines('annotations'),
     };
   }
 }
