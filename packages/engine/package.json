@@ -1,0 +1,14 @@
+{
+  "name": "@canutell/engine",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure, deterministic CANUTELL rules engine. No I/O, no clock, no network.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@canutell/protocol": "workspace:*",
+    "zod": "^4.1.0"
+  }
+}

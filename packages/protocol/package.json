@@ -1,0 +1,13 @@
+{
+  "name": "@canutell/protocol",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared zod schemas: match config, actions, events, per-seat views.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^4.1.0"
+  }
+}

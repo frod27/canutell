@@ -1,0 +1,14 @@
+{
+  "name": "@canutell/sim",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless simulator: runs bot-only matches through the engine and reports invariants.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@canutell/engine": "workspace:*",
+    "@canutell/protocol": "workspace:*"
+  }
+}
