@@ -5,23 +5,39 @@ gamble and vote, then label every other player as human or agent. Rules and data
 [`docs/SPEC.md`](docs/SPEC.md). Build contract: [`CLAUDE.md`](CLAUDE.md). Decisions:
 [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
-**Current phase: 1 — engine + simulator.**
+**Current phase: 2 — real-time loop** (Phase 1, engine + simulator, is complete).
 
 ```sh
 pnpm install
 pnpm test                                    # all unit + integration tests
-pnpm sim --matches 10000 --mode full         # also: --mode quick | both, --seed, --timeout-pct, --json
+pnpm sim --matches 10000 --mode full         # engine simulator (also --mode quick | both)
+pnpm loadtest --matches 200 --mode both      # real matches over WebSockets, fully audited
 pnpm typecheck && pnpm lint && pnpm format:check
 ```
 
+Play locally:
+
+```sh
+pnpm serve:dev     # game server on :8787; fills empty seats with bots after 5 s (dev only)
+pnpm web           # web client on http://localhost:3000
+```
+
+`pnpm serve` runs the server without bot fill. It is configured by environment variables (`PORT`,
+`DATA_DIR`, `CLOCK_SPEED`, `FILL_BOTS_MS`, `AGENT_WEIGHTS`; see `apps/server/src/main.ts`). Match logs go
+to `data/matches/<matchId>/` as append-only JSONL. The web client connects to `NEXT_PUBLIC_SERVER_URL`,
+or to port 8787 on the page's host.
+
 ## Layout
 
-| Path                                                                | Status       | What                                                                       |
-| ------------------------------------------------------------------- | ------------ | -------------------------------------------------------------------------- |
-| `packages/protocol`                                                 | built        | zod schemas: match config, actions, events, per-seat views; rule constants |
-| `packages/engine`                                                   | built        | pure deterministic rules engine (only depends on zod + protocol)           |
-| `sim/`                                                              | built        | headless simulator, bot policies, independent log audit                    |
-| `apps/server`, `apps/web`, `services/agents`, `supabase/migrations` | placeholders | later phases                                                               |
+| Path                                     | Status       | What                                                                                          |
+| ---------------------------------------- | ------------ | --------------------------------------------------------------------------------------------- |
+| `packages/protocol`                      | built        | zod schemas: config, actions, events, per-seat views, WebSocket messages; rule constants      |
+| `packages/engine`                        | built        | pure deterministic rules engine (depends only on zod and protocol)                            |
+| `packages/bots`                          | built        | scripted policies and a WebSocket bot client that plays through the public protocol           |
+| `apps/server`                            | built        | server-authoritative game server: sessions, matchmaking, parties, timers, latency, JSONL logs |
+| `apps/web`                               | minimal      | Next.js 15 client: lobby, every prompt, chat, reveal; installable                             |
+| `sim/`                                   | built        | headless simulator and the independent log audit                                              |
+| `services/agents`, `supabase/migrations` | placeholders | Phases 4 and 3                                                                                |
 
 ## Engine API
 
@@ -59,3 +75,15 @@ gets a deep audit:
 - three counterfactual role layouts, whose views must be byte-identical
 
 Any violation sets exit code 1.
+
+## Server
+
+- **Authoritative.** Clients send choices only. The server runs `applyAction`, schedules
+  `advancePhase` at each deadline, and pushes each seat its own `viewFor` only when that view changed.
+- **Latency** is measured on the server, from when a prompt reaches the seat's socket to when its
+  choice arrives. Client timestamps are stored, never trusted.
+- **Matchmaking** draws the agent count before humans gather and shows no queue counts. Parties
+  (private codes) are tagged `is_party`. Agent seats are filled by scripted bots over the same protocol
+  until Phase 4.
+- **Every match is logged:** meta, events, inputs, timings, connections and rejections. Phase 2 matches
+  are flagged as non-research data. See `docs/DECISIONS.md` for the reasoning behind each choice.

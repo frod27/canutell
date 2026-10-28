@@ -220,6 +220,114 @@ Seed `canutell`, 10,000 matches per mode, 0 invariant violations in both.
   (range 68–90), including timeouts and returns. Timeouts were 6–7% at the sim's 5% skip rate plus
   deferred returns.
 
+## 2026-10-28 — Phase 2 (real-time loop)
+
+### Phase 2 scope [user]
+
+- **Question.** Four choices for Phase 2: does it include a web client, how are matches persisted before
+  Phase 3's database, who plays agent seats before Phase 4, and what happens when fewer than 4 humans are
+  available?
+- **Decision.** The owner approved all four recommendations:
+  1. **Minimal web client.** An unstyled but playable Next.js 15 page, so humans can test the loop.
+  2. **JSONL persistence.** Each match is written as append-only JSONL files behind a `MatchStore`
+     interface. Postgres replaces them in Phase 3.
+  3. **Scripted agents.** Agent seats are played by scripted bots over the public protocol, labelled
+     `agent_version = "scripted-0"`, and those matches are flagged.
+  4. **Dev-only bot fill.** A server flag (`FILL_BOTS_MS`, off by default) fills empty human seats with
+     bots, and those matches are flagged `bot_fill`.
+- **Reason.** Real human play is the only way to sanity-check timers. A restart should not lose matches.
+  Agent seats should exercise the same protocol path that Phase 4 agents will use.
+
+### Every Phase 2 match is flagged as non-research data [engine, data tradeoff → data]
+
+- `meta.flags` always includes `phase2`. It adds `scripted_agents` when agents are present, `bot_fill`
+  when filler bots sat in human seats, and `sped_up` when the server clock ran faster than real time.
+- Phase 3 exports must exclude these flags.
+
+### Agent count is drawn before humans gather [engine]
+
+- The public queue draws the next match's agent count (0–2) first, then waits for 6 − k humans.
+- `queue.status` carries no player counts. "4 humans waiting, then the match started" would reveal 2
+  agents (CLAUDE.md invariant 7).
+- Seats are shuffled, so seat numbers say nothing about queue order or roles.
+
+### Parties [engine]
+
+- A party is a private lobby joined by code. It plays with 4–6 humans, and agents fill the remaining
+  0–2 seats.
+- The party can therefore work out the agent count. That is acceptable only because party matches are
+  tagged `is_party` and excluded from detection metrics (SPEC §Integrity, CLAUDE.md invariant 11).
+- Parties of fewer than 4 can start only with dev bot fill.
+
+### View pushes [engine, data tradeoff → data]
+
+- A seat gets a new `view` frame only when _its own_ view changed.
+- Pushing to everyone on every transition would be a timing side channel: an unchanged view arriving
+  right after a private stake between two other seats tells a third seat that something happened.
+- The match runner tests this, and the load test checks every frame received.
+
+### Latency (CLAUDE.md invariant 6) [engine]
+
+- `latencyMs = receivedAt − promptSentAt`, both server times.
+  - `promptSentAt` is when a view containing that prompt was first written to the seat's socket. If
+    the seat was disconnected when the prompt opened, its clock starts when it reconnects.
+  - Prompts are identified by `promptKey`: kind + round, or the stake for a return.
+- A timed-out decision records whether the seat ever saw the prompt (`promptSentAt` null or not), so
+  analysis can tell "saw it and stayed idle" from "never saw it".
+- Client `clientSentAt` is stored separately and never trusted.
+- Connect and disconnect events are logged per seat.
+
+### Late actions [engine]
+
+- Action frames carry `seenPhase`, the round and phase of the view the client acted on. If the match
+  has moved past it when the frame arrives, the rejection is reported as `late`, and the engine's own
+  reason (`wrong_phase`, `stake_closed`, …) is kept as `engineCode`.
+- Without this, a choice sent just before a deadline and processed just after it is reported as
+  "wrong phase", which is misleading for players and noisy in the data.
+- Rejections are logged per match: late attempts are behavioral data too.
+
+### Restarts [engine]
+
+- On startup, any stored match still marked `running` is marked `aborted`. Matches are not resumed:
+  guest tokens live in memory, so players could not reattach anyway.
+- The full input log is stored, so `replay()` can rebuild any interrupted match for analysis.
+
+### Guests and seat tokens [engine]
+
+- Each connection is a guest with a server-issued pseudonymous `playerId` (`p_<uuid>`) and a random
+  48-hex-character token. The token lets a reload or reconnect resume the seat. No personal data is
+  collected (accounts come in Phase 5).
+- Bot seats get a token too, and connect through the same `hello`. Bot tokens cannot join queues or
+  parties.
+
+### Frame hygiene [engine]
+
+- Every inbound frame is zod-parsed. Frames are capped at 64 KB.
+- Each socket is rate-limited (15 frames/s, burst 30) and closed after 50 invalid frames.
+- The engine still validates every action (CLAUDE.md invariant 5).
+- An action whose `seat` is not the sender's seat is rejected with `not_your_seat`.
+
+### Scripted bot timing [engine, flagged]
+
+- CLAUDE.md invariant 14 asks agents to sample response times from the human latency distribution.
+  There is no human data yet, so scripted bots use a placeholder: a skewed draw over the phase, at
+  least 0.8 s, and never past the deadline.
+- That gap is one reason scripted-agent matches are flagged. Phase 4 agents must sample from real
+  timings.
+
+### Phase 2 acceptance results
+
+- `pnpm loadtest --matches 200 --mode both --speed 60` passed with 0 violations: 400 matches over real
+  WebSockets, with 1,200 seated clients per mode. The checks per match:
+  - the Phase 1 log audit
+  - a byte-identical `replay()` of the server's input log
+  - a latency record for every decision
+  - no rejection other than `late`
+  - no roles in any frame before Reveal, and no frame carrying another seat's view
+- Under that stress (×60 clock, 200 concurrent matches), about 0.2% of actions arrived late.
+- A browser run (`apps/web/e2e/smoke.mjs`) played a quick match through the real UI at phone width, from
+  lobby to Reveal, with no page errors.
+
 ---
 
 ## Later
@@ -237,3 +345,11 @@ Noted while building Phase 1; out of scope for this phase.
 - **Menu pools** for Gamble (SPEC: "menu pools come later").
 - **The cold-start fill question** in SPEC §Open questions affects `drawAgentSeats` weights and the H
   calculation.
+- **Resume matches after a restart.** Persist guest sessions (or wait for Phase 5 accounts), replay
+  running matches from their input logs, and let players reattach.
+- **A human latency model for agents** (CLAUDE.md invariant 14), once Phase 3 has real timing data.
+- **Horizontal scaling.** One process holds all matches today. Sharding by match id with sticky
+  WebSocket routing comes later.
+- **Real UI design** (cosmetics hooks, accessibility pass). Phase 2's client is deliberately minimal.
+- **Production build of the server.** Today it runs from TypeScript source via `tsx`. Bundle it for
+  deployment on a persistent-process host (not serverless).
