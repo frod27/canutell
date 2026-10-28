@@ -213,3 +213,11 @@ export const SeatViewSchema = z.object({
   reveal: RevealViewSchema.nullable(),
 });
 export type SeatView = z.infer<typeof SeatViewSchema>;
+
+/**
+ * Stable identity of a prompt: kind + round, or the stake for a return. The server measures latency
+ * from the first time a view containing this key reaches the seat (CLAUDE.md invariant 6).
+ */
+export function promptKey(p: Prompt, round: number): string {
+  return p.kind === 'return' ? `return:${p.stakeId}` : `${p.kind}:${round}`;
+}

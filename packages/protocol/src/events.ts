@@ -244,3 +244,8 @@ export const EventSchema = z.discriminatedUnion('type', [
 export type MatchEvent = z.infer<typeof EventSchema>;
 export type EventOf<T extends EventType> = Extract<MatchEvent, { type: T }>;
 export type PayloadOf<T extends EventType> = z.infer<(typeof EventPayloadSchemas)[T]>;
+
+/** The prompt key (see views.ts `promptKey`) a decision answers. */
+export function decisionPromptKey(d: DecisionPayload): string {
+  return d.kind === 'return' ? `return:${d.optionSet.stakeId}` : `${d.kind}:${d.round}`;
+}
