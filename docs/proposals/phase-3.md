@@ -1,7 +1,9 @@
 # Phase 3 proposal: event log, schema, reveal screen
 
-Status: **draft for approval.** Nothing here is applied or committed yet. CLAUDE.md requires approval of
-the plan and of every schema change.
+Status: **approved 2026-10-28 and implemented.** Owner answers: the recommendations for questions 1–3, and
+no Supabase project yet. Where the shipped migration differs from the SQL below, see DECISIONS.md
+"Differences between migration 0001 and the approved proposal". The applied file is
+`supabase/migrations/0001_match_log.sql`.
 
 ## Goal
 

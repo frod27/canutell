@@ -5,7 +5,7 @@ gamble and vote, then label every other player as human or agent. Rules and data
 [`docs/SPEC.md`](docs/SPEC.md). Build contract: [`CLAUDE.md`](CLAUDE.md). Decisions:
 [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
-**Current phase: 2 — real-time loop** (Phase 1, engine + simulator, is complete).
+**Current phase: 3 — event log, schema, reveal screen** (Phases 1–2 are complete).
 
 ```sh
 pnpm install
@@ -22,22 +22,39 @@ pnpm serve:dev     # game server on :8787; fills empty seats with bots after 5 s
 pnpm web           # web client on http://localhost:3000
 ```
 
-`pnpm serve` runs the server without bot fill. It is configured by environment variables (`PORT`,
-`DATA_DIR`, `CLOCK_SPEED`, `FILL_BOTS_MS`, `AGENT_WEIGHTS`; see `apps/server/src/main.ts`). Match logs go
-to `data/matches/<matchId>/` as append-only JSONL. The web client connects to `NEXT_PUBLIC_SERVER_URL`,
-or to port 8787 on the page's host.
+`pnpm serve` runs the server without bot fill. It is configured by environment variables; see
+`apps/server/src/main.ts` for the full list. The web client connects to `NEXT_PUBLIC_SERVER_URL`, or to
+port 8787 on the page's host.
+
+**Storage.**
+
+- **With `DATABASE_URL`** (any Postgres; Supabase when there is a project), matches are written to
+  Postgres and reveals can be reopened at `/match/<id>`.
+- **Without it,** they go to `data/matches/<matchId>/` as append-only JSONL.
+
+```sh
+export DATABASE_URL=postgres://user@host:5432/canutell
+pnpm db:migrate                       # apply supabase/migrations/NNNN_*.sql (the server refuses to start if any are pending)
+pnpm db:status                        # applied / pending migrations
+pnpm db:derive [--match ID]           # rebuild derived tables from the log
+pnpm db:purge --flag phase3 --yes     # privacy deletion of pre-Phase-5 dev data
+pnpm loadtest --store postgres        # load test, plus database-vs-log and HTTP reveal checks
+TEST_DATABASE_URL=postgres://... pnpm test   # run DB tests on real Postgres (default: in-process PGlite)
+```
 
 ## Layout
 
-| Path                                     | Status       | What                                                                                          |
-| ---------------------------------------- | ------------ | --------------------------------------------------------------------------------------------- |
-| `packages/protocol`                      | built        | zod schemas: config, actions, events, per-seat views, WebSocket messages; rule constants      |
-| `packages/engine`                        | built        | pure deterministic rules engine (depends only on zod and protocol)                            |
-| `packages/bots`                          | built        | scripted policies and a WebSocket bot client that plays through the public protocol           |
-| `apps/server`                            | built        | server-authoritative game server: sessions, matchmaking, parties, timers, latency, JSONL logs |
-| `apps/web`                               | minimal      | Next.js 15 client: lobby, every prompt, chat, reveal; installable                             |
-| `sim/`                                   | built        | headless simulator and the independent log audit                                              |
-| `services/agents`, `supabase/migrations` | placeholders | Phases 4 and 3                                                                                |
+| Path                  | Status      | What                                                                                           |
+| --------------------- | ----------- | ---------------------------------------------------------------------------------------------- |
+| `packages/protocol`   | built       | zod schemas: config, actions, events, per-seat views, WebSocket messages; rule constants       |
+| `packages/engine`     | built       | pure deterministic rules engine (depends only on zod and protocol)                             |
+| `packages/db`         | built       | migrations, Postgres match store, derivation of analysis tables, reveal queries, privacy purge |
+| `packages/bots`       | built       | scripted policies and a WebSocket bot client that plays through the public protocol            |
+| `apps/server`         | built       | server-authoritative game server: sessions, matchmaking, parties, timers, latency, JSONL logs  |
+| `apps/web`            | minimal     | Next.js 15 client: lobby, every prompt, chat, reveal; installable                              |
+| `sim/`                | built       | headless simulator and the independent log audit                                               |
+| `supabase/migrations` | built       | numbered SQL migrations (`0001_match_log.sql`)                                                 |
+| `services/agents`     | placeholder | Phase 4                                                                                        |
 
 ## Engine API
 
@@ -87,3 +104,14 @@ Any violation sets exit code 1.
   until Phase 4.
 - **Every match is logged:** meta, events, inputs, timings, connections and rejections. Phase 2 matches
   are flagged as non-research data. See `docs/DECISIONS.md` for the reasoning behind each choice.
+
+## Data
+
+- **Log tables are append-only:** `events`, `match_inputs`, `decision_timings`, `connections` and
+  `rejections`. A database trigger refuses any `UPDATE` or `DELETE`, except inside the privacy-deletion
+  job.
+- **Analysis tables are derived from the log** by one pure function and can be rebuilt at any time:
+  `decisions`, `stakes`, `messages`, `ballots` and `seat_results`.
+- **Locked down by default:** every table has row-level security with no policies, so Supabase's public
+  API keys see nothing.
+- **No personal data:** players are pseudonymous `p_<uuid>` ids and chat is stored already masked.

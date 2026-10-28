@@ -330,6 +330,108 @@ Seed `canutell`, 10,000 matches per mode, 0 invariant violations in both.
 
 ---
 
+## 2026-10-28 — Phase 3 (event log, schema, reveal screen)
+
+### Phase 3 plan and migration 0001 [user]
+
+- **Question.** The plan and the proposed migration in `docs/proposals/phase-3.md`, plus four open
+  questions.
+- **Decision.** The owner approved the plan and migration, with all four recommendations:
+  1. **Guest data before accounts:** keep it as flagged dev data and purge it before the closed alpha
+     (entry below).
+  2. **Schema scope:** match tables plus a minimal `players` table now. `identities`, `consents` and
+     `integrity_signals` come with Phase 5.
+  3. **Reveal:** live, plus reopenable at `/match/[id]` from the database.
+  4. **Database:** standard Postgres, tested locally. There is no Supabase project yet; the server
+     connects via `DATABASE_URL` once one exists.
+
+### Guest data before accounts [user, data tradeoff → flagged]
+
+- **The conflict:** SPEC §Integrity says T0 guests are "play only; nothing kept beyond the match", but
+  every player is a guest until Phase 5.
+- **Decision:** matches are kept, and every one carries its build-phase flag (`phase3`), which means dev
+  data that is never research-eligible.
+- **Purge:** `pnpm db:purge --flag phase3 --yes` deletes them through the privacy-deletion path. It must
+  run before the closed alpha.
+- **From Phase 5:** the T0 rule applies as written.
+
+### Differences between migration 0001 and the approved proposal [engine, flagged for review]
+
+Small tightenings made while implementing, all inside the approved migration:
+
+- `stakes.seq`: the seq of the `stake_sent` event. It gives creation order (needed to pick the biggest
+  stake and order unreturned stakes exactly as the engine does) and links each row back to the log.
+- **Extra constraints:**
+  - `seats`: humans have `trust_level_at_match`, and no one else does.
+  - `decisions.kind` is restricted to the six decision kinds.
+  - `seat_results` must satisfy `final_score = coins + delay + exile + ballot`.
+- **`on delete cascade` from `matches`.** It lets the privacy job delete a match in one statement. The
+  append-only triggers still fire on every cascaded row, so a cascade without the privacy flag fails
+  (tested).
+- **`schema_migrations`** is created by the migration runner (with RLS), not by 0001.
+- **Extra revokes.** Belt and braces on Supabase: `revoke all … from anon, authenticated` on tables,
+  sequences and functions when those roles exist, plus `revoke all … from public`.
+
+### Phase 3 write path [engine]
+
+- **One transaction per transition.** Everything one engine transition produces (input, events,
+  timings) is buffered in the same tick and committed in one transaction, through an ordered per-match
+  queue. The database therefore always holds the log up to the last completed transition, never half of
+  one.
+- **Retries:** failed batches retry with backoff, without reordering.
+- **Permanent failure:** if a batch still fails, it is reported and every later batch for that match is
+  held back. Writing them would leave a gap in the append-only log. The match stays `running` and is
+  marked `aborted` at the next startup.
+- **"Completed" guarantees derived rows.** On match end, derivation and the `completed` status commit
+  in one transaction, so a reveal is reopenable the moment the match says it is finished. If derivation
+  fails, the status is still written, the error is reported, and `pnpm db:derive` can rebuild later.
+- **Startup:** the server refuses to start while migrations are pending (they are applied deliberately
+  with `pnpm db:migrate`), then marks any `running` match `aborted`.
+
+### Derived tables [engine]
+
+- **Pure derivation.** `deriveRows(events, timings)` is a pure function. It is strict: a sequence gap, a
+  missing timing record, or a timing that disagrees with its event throws instead of producing a
+  plausible row.
+- **Prompt delivery:** `decisions.prompt_seen` records whether the prompt ever reached the seat.
+- **Ballots:** one row per (voter, target), with blanks explicit.
+- **Self-check:** the reveal rebuilt from derived tables must equal the engine's own reveal, for every
+  match in tests and in the Postgres load test.
+- **Comparing logs:** Postgres `jsonb` does not keep key order, so logs read back are compared to
+  in-memory logs in canonical (key-sorted) JSON. Values are unchanged.
+
+### Reopening a reveal [engine]
+
+- **Endpoint:** `GET /api/matches/:id/reveal` with `Authorization: Bearer <guest token>`. It answers
+  only a player who held a human seat in that match. Everyone else gets 404, which gives no hint the
+  match exists; a missing token gets 401.
+- **Response:** the reveal is built from derived tables, plus that player's own stakes.
+- **Guest limitation:** guest tokens live in server memory, so a reveal can be reopened only from the
+  device that played it, and only until the server restarts. Phase 5 accounts lift this.
+- **Leaderboard:** AI players are listed separately (SPEC §Scoring: agents never appear on human
+  leaderboards). Phase 2's single mixed table broke that.
+
+### Test databases [engine]
+
+- **Default:** tests run against PGlite (in-process Postgres 18) with no setup.
+- **Real Postgres:** `TEST_DATABASE_URL=postgres://…` runs the same tests against real Postgres, each
+  test file in a throwaway database. Both pass (local Postgres 16).
+
+### Phase 3 acceptance results
+
+- **Load test:** `pnpm loadtest --matches 200 --mode both --store postgres` (local Postgres 16) passed
+  with 0 violations over 400 matches. Per match:
+  - the database log equals the server log (events, inputs, timings, connections, rejections)
+  - the database-built reveal equals the engine reveal
+  - derived rows reconcile
+- **HTTP reveals:** 80 checked and correct; every unauthorized request refused.
+- **Browser smoke test** (3 runs, Postgres-backed server): played to Reveal, followed the permanent link,
+  and the reopened page matched the live reveal exactly; a browser without the player's token was
+  refused.
+- **Suite:** 221 tests pass, including 31 database tests on both PGlite and Postgres 16.
+
+---
+
 ## Later
 
 Noted while building Phase 1; out of scope for this phase.
@@ -353,3 +455,9 @@ Noted while building Phase 1; out of scope for this phase.
 - **Real UI design** (cosmetics hooks, accessibility pass). Phase 2's client is deliberately minimal.
 - **Production build of the server.** Today it runs from TypeScript source via `tsx`. Bundle it for
   deployment on a persistent-process host (not serverless).
+- **Supabase project hookup.** Create the project, `pnpm db:migrate` against it, and set the server's
+  `DATABASE_URL` (service role / direct connection).
+- **CI against real Postgres** (`TEST_DATABASE_URL`) in addition to PGlite.
+- **Reopening a reveal after a server restart.** Needs persistent identities (Phase 5).
+- **Training-export views.** Encode CLAUDE.md invariant 10 (`is_agent = false`, trust >= T2, active
+  consent) as a database view in Phase 5, together with `consents`.
