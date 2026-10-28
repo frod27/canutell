@@ -2,7 +2,7 @@ import type { MatchInput } from '@canutell/engine';
 import type { MatchEvent, RevealView, SeatId } from '@canutell/protocol';
 import { deriveRows, type DerivedRows } from './derive';
 import type { Sql } from './sql';
-import type { ConnectionRecord, MatchStatus, RejectionRecord, TimingRecord } from './types';
+import type { AnnotationRecord, ConnectionRecord, MatchStatus, RejectionRecord, TimingRecord } from './types';
 
 // Reads and rebuilds. Writes during a live match go through PostgresStore.
 
@@ -48,6 +48,7 @@ export interface LoadedMatch {
   timings: TimingRecord[];
   connections: ConnectionRecord[];
   rejections: RejectionRecord[];
+  annotations: AnnotationRecord[];
 }
 
 export async function loadMatch(sql: Sql, matchId: string): Promise<LoadedMatch | null> {
@@ -77,6 +78,10 @@ export async function loadMatch(sql: Sql, matchId: string): Promise<LoadedMatch 
   );
   const rejections = await sql.query<Record<string, unknown>>(
     'select seat_id, at, code, engine_code, action_type from rejections where match_id = $1 order by idx',
+    [matchId],
+  );
+  const annotations = await sql.query<{ seq: number; seat_id: number; confidence: number }>(
+    'select seq, seat_id, confidence from agent_annotations where match_id = $1 order by seq',
     [matchId],
   );
   return {
@@ -124,6 +129,11 @@ export async function loadMatch(sql: Sql, matchId: string): Promise<LoadedMatch 
       engineCode: (r.engine_code as string | null) ?? null,
       actionType: r.action_type as string,
     })),
+    annotations: annotations.map((a) => ({
+      seq: a.seq,
+      seat: a.seat_id as SeatId,
+      confidence: a.confidence,
+    })),
   };
 }
 
@@ -136,7 +146,7 @@ export async function rebuildDerived(sql: Sql, matchId: string): Promise<Derived
   return sql.transaction(async (tx) => {
     const m = await loadMatch(tx, matchId);
     if (!m) throw new Error(`no match ${matchId}`);
-    const rows = deriveRows(matchId, m.events, m.timings);
+    const rows = deriveRows(matchId, m.events, m.timings, m.annotations);
     for (const t of DERIVED) await tx.query(`delete from ${t} where match_id = $1`, [matchId]);
     const withId = <T extends object>(r: T) => ({ match_id: matchId, ...r });
     await insertRows(

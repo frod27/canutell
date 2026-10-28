@@ -221,3 +221,45 @@ describe('privacy deletion (pre-Phase-5 dev data)', () => {
     );
   });
 });
+
+describe('agent annotations (migration 0002)', () => {
+  it('derive fills decisions.confidence for agent seats only, and refuses annotations on human seats', async () => {
+    let idx = 400;
+    while (!simMatch(idx).config.seats.some((x) => x.isAgent)) idx++;
+    const r = simMatch(idx);
+    const agentSeat = r.config.seats.find((s) => s.isAgent)!.seatId;
+    const humanSeat = r.config.seats.find((s) => !s.isAgent)!.seatId;
+    const s = store();
+    const meta = metaFor(r, idx);
+    await feed(s, r, meta, { close: false });
+    const decisions = r.events.filter((e) => e.type === 'decision');
+    for (const e of decisions.filter((d) => d.seat === agentSeat)) {
+      s.annotation(meta.matchId, { seq: e.seq, seat: agentSeat, confidence: 61 });
+    }
+    s.close(meta.matchId, 'completed', 1_700_000_100_000);
+    await s.drain();
+    const rows = await sql.query<{ seat_id: number; confidence: number | null }>(
+      'select seat_id, confidence from decisions where match_id = $1',
+      [meta.matchId],
+    );
+    for (const row of rows) expect(row.confidence).toBe(row.seat_id === agentSeat ? 61 : null);
+    expect(rows.some((x) => x.confidence === 61)).toBe(true);
+
+    // An annotation on a human seat's decision is a data error: derivation refuses it.
+    const humanDecision = decisions.find((d) => d.seat === humanSeat)!;
+    await sql.query(
+      'insert into agent_annotations (match_id, seq, seat_id, confidence) values ($1, $2, $3, 50)',
+      [meta.matchId, humanDecision.seq, humanSeat],
+    );
+    await expect(rebuildDerived(sql, meta.matchId)).rejects.toThrow(/not from that decision's agent seat/);
+    await expect(
+      sql.query('delete from agent_annotations where match_id = $1', [meta.matchId]),
+    ).rejects.toThrow(/append-only/);
+  });
+
+  it('registers baseline-1', async () => {
+    expect(await sql.query(`select class from agent_versions where agent_version = 'baseline-1'`)).toEqual([
+      { class: 'baseline' },
+    ]);
+  });
+});

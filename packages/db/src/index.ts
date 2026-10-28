@@ -16,3 +16,11 @@ export {
 export { PostgresStore, type PostgresStoreOptions } from './postgres-store';
 export { canonicalJson } from './canonical';
 export { dbRevealSource, type RevealSource } from './reveal-source';
+export {
+  exportLatencyModel,
+  EXCLUDED_FLAGS,
+  LATENCY_MODEL_VERSION,
+  type LatencyModel,
+  type LatencyBucket,
+} from './latency-model';
+export { humanlikeness, type HumanlikenessRow } from './humanlikeness';

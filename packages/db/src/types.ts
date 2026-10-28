@@ -20,8 +20,22 @@ export type MatchStatus = 'running' | 'completed' | 'aborted';
  * `scripted_agents`: agent seats are played by scripted bots, not trained agents.
  * `bot_fill`: some human seats were filled by bots (dev only).
  * `sped_up`: played on a clock faster than real time (tests, load tests).
+ * `baseline_agents`: at least one seat played by the baseline agent service.
+ * `agent_fallback`: an agent seat fell back to a scripted bot because the agent service was unavailable.
+ * `latency_prior`: an agent timed itself from the placeholder prior, not human data (DECISIONS "Agent timing").
+ * `scripted_chat`: an agent chatted from scripted lines because no LLM was configured.
  */
-export type MatchFlag = 'phase2' | 'phase3' | 'scripted_agents' | 'bot_fill' | 'sped_up';
+export type MatchFlag =
+  | 'phase2'
+  | 'phase3'
+  | 'phase4'
+  | 'scripted_agents'
+  | 'baseline_agents'
+  | 'agent_fallback'
+  | 'latency_prior'
+  | 'scripted_chat'
+  | 'bot_fill'
+  | 'sped_up';
 
 export interface SeatOccupant {
   seat: SeatId;
@@ -77,6 +91,15 @@ export interface RejectionRecord {
   actionType: string;
 }
 
+/** An agent seat's self-reported confidence in one decision (SPEC §Agents). Agent seats only. */
+export interface AnnotationRecord {
+  /** seq of the decision event it annotates. */
+  seq: number;
+  seat: SeatId;
+  /** Percent, 0–100. */
+  confidence: number;
+}
+
 export interface MatchStore {
   open(meta: MatchMeta): void;
   events(matchId: string, events: readonly MatchEvent[]): void;
@@ -84,6 +107,7 @@ export interface MatchStore {
   timing(matchId: string, record: TimingRecord): void;
   connection(matchId: string, record: ConnectionRecord): void;
   rejection(matchId: string, record: RejectionRecord): void;
+  annotation(matchId: string, record: AnnotationRecord): void;
   close(matchId: string, status: Exclude<MatchStatus, 'running'>, at: number): void;
   /** Flush and release resources. */
   shutdown(): Promise<void>;
@@ -96,4 +120,5 @@ export interface StoredMatch {
   timings: TimingRecord[];
   connections: ConnectionRecord[];
   rejections: RejectionRecord[];
+  annotations: AnnotationRecord[];
 }

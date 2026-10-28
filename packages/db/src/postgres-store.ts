@@ -3,6 +3,7 @@ import type { MatchEvent } from '@canutell/protocol';
 import { insertRows, iso, rebuildDerived } from './queries';
 import type { Sql } from './sql';
 import type {
+  AnnotationRecord,
   ConnectionRecord,
   MatchMeta,
   MatchStatus,
@@ -27,6 +28,7 @@ type Op =
   | { t: 'timing'; r: TimingRecord }
   | { t: 'connection'; idx: number; r: ConnectionRecord }
   | { t: 'rejection'; idx: number; r: RejectionRecord }
+  | { t: 'annotation'; r: AnnotationRecord }
   | { t: 'close'; status: Exclude<MatchStatus, 'running'>; at: number };
 
 interface Lane {
@@ -216,6 +218,12 @@ export class PostgresStore implements MatchStore {
             [id, op.idx, op.r.seat, iso(op.r.at), op.r.code, op.r.engineCode, op.r.actionType],
           );
           break;
+        case 'annotation':
+          await tx.query(
+            'insert into agent_annotations (match_id, seq, seat_id, confidence) values ($1, $2, $3, $4)',
+            [id, op.r.seq, op.r.seat, op.r.confidence],
+          );
+          break;
         case 'close':
           // The status flips together with derivation, after this batch commits (see flush).
           await tx.query(`update matches set ended_at = $2::timestamptz where match_id = $1`, [
@@ -299,6 +307,9 @@ export class PostgresStore implements MatchStore {
   }
   rejection(id: string, r: RejectionRecord): void {
     this.push(id, { t: 'rejection', idx: this.lane(id).rejections++, r });
+  }
+  annotation(id: string, r: AnnotationRecord): void {
+    this.push(id, { t: 'annotation', r });
   }
   close(id: string, status: Exclude<MatchStatus, 'running'>, at: number): void {
     this.push(id, { t: 'close', status, at });

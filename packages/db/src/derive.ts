@@ -1,6 +1,6 @@
 import { ballotPayoff } from '@canutell/engine';
 import type { EventOf, MatchEvent, SeatId } from '@canutell/protocol';
-import type { TimingRecord } from './types';
+import type { AnnotationRecord, TimingRecord } from './types';
 
 // Derived tables are a pure function of the log (CLAUDE.md invariant 8): events + server timings in,
 // rows out. Same input → same rows, so derive() can be rerun at any time. It is strict: anything
@@ -88,6 +88,7 @@ export function deriveRows(
   matchId: string,
   events: readonly MatchEvent[],
   timings: readonly TimingRecord[],
+  annotations: readonly AnnotationRecord[] = [],
 ): DerivedRows {
   const fail = (m: string): never => {
     throw new DerivationError(matchId, m);
@@ -101,6 +102,7 @@ export function deriveRows(
 
   // ---- decisions (latency and prompt delivery from the server's timing log) ----
   const timingBySeq = new Map(timings.map((t) => [t.seq, t]));
+  const confidenceBySeq = new Map(annotations.map((a) => [a.seq, a]));
   const decisions: DecisionRow[] = of('decision').map((e) => {
     const p = e.payload;
     const t = timingBySeq.get(e.seq) ?? fail(`decision seq ${e.seq} has no timing record`);
@@ -114,7 +116,13 @@ export function deriveRows(
       kind: p.kind,
       option_set: p.optionSet,
       chosen: p.chosen,
-      confidence: null,
+      confidence: (() => {
+        const a = confidenceBySeq.get(e.seq);
+        if (!a) return null;
+        if (a.seat !== e.seat || !isAgent[e.seat!])
+          fail(`annotation for seq ${e.seq} is not from that decision's agent seat`);
+        return a.confidence;
+      })(),
       timed_out: p.timedOut,
       latency_ms: t.latencyMs,
       prompt_seen: t.promptSentAt !== null,
