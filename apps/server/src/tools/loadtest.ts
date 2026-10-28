@@ -1,7 +1,18 @@
 import { parseArgs } from 'node:util';
 import { BotClient, POLICY_NAMES, type BotResult } from '@canutell/bots';
-import { hashJson, replay } from '@canutell/engine';
-import { ModeSchema, type Mode, type ServerMessage } from '@canutell/protocol';
+import {
+  PostgresStore,
+  canonicalJson,
+  dbRevealSource,
+  loadMatch,
+  pgSql,
+  revealFromDb,
+  type MatchStore,
+  type RevealSource,
+  type Sql,
+} from '@canutell/db';
+import { hashJson, replay, viewFor } from '@canutell/engine';
+import { MatchRevealResponseSchema, ModeSchema, type Mode, type ServerMessage } from '@canutell/protocol';
 import { auditMatch, type Violation } from '@canutell/sim';
 import { ScaledClock } from '../clock';
 import { startGameServer } from '../server';
@@ -19,6 +30,12 @@ import { MemoryStore, type StoredMatch } from '../store';
 //   • no rejection other than `late` (bots only answer prompts they were shown)
 //   • every frame a client received before Reveal is free of roles (CLAUDE.md invariant 7), and every
 //     view frame is that client's own seat
+//
+// With --store postgres (needs DATABASE_URL, migrated), every write also goes to Postgres, and:
+//   • the database log equals the in-memory log (events, inputs, timings, connections, rejections)
+//   • the reveal rebuilt from derived tables equals the engine's reveal, for every match
+//   • derived rows reconcile with the log
+//   • GET /api/matches/:id/reveal answers a seated player correctly and refuses everyone else
 
 const ROLE_LEAK = /isAgent|agentVersion|agentCount|scripted-0|targetIsAgent/;
 
@@ -36,14 +53,20 @@ function parse() {
       speed: { type: 'string', default: '60' },
       concurrency: { type: 'string', default: '100' },
       'timeout-pct': { type: 'string', default: '5' },
+      store: { type: 'string', default: 'memory' },
     },
   });
+  if (values.store !== 'memory' && values.store !== 'postgres')
+    throw new Error('--store must be memory or postgres');
+  if (values.store === 'postgres' && !process.env.DATABASE_URL)
+    throw new Error('--store postgres needs DATABASE_URL');
   return {
     matches: Number(values.matches),
     modes: (values.mode === 'both' ? ['full', 'quick'] : [ModeSchema.parse(values.mode)]) as Mode[],
     speed: Number(values.speed),
     concurrency: Number(values.concurrency),
     timeoutPct: Number(values['timeout-pct']),
+    store: values.store as 'memory' | 'postgres',
   };
 }
 
@@ -79,9 +102,19 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
     return bot;
   };
 
+  let sql: Sql | null = null;
+  let pg: PostgresStore | null = null;
+  let reveals: RevealSource | undefined;
+  const dbErrors: string[] = [];
+  if (o.store === 'postgres') {
+    sql = pgSql(process.env.DATABASE_URL!);
+    pg = new PostgresStore(sql, { onError: (id, e) => dbErrors.push(`${id}: ${String(e)}`) });
+    reveals = dbRevealSource(sql);
+  }
   const server = await startGameServer({
     clock,
-    store,
+    store: pg ? tee(store, pg) : store,
+    reveals,
     spawnBot: (args) => launch(args.url, args.token, undefined),
   });
 
@@ -103,11 +136,16 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   while (server.stats().matchesRunning > 0) await sleep(50);
   await Promise.allSettled(pending);
   const seconds = (performance.now() - started) / 1000;
+
+  const violations: Violation[] = [];
+  const fail = (check: string, detail: string) => violations.push({ check, detail });
+  if (pg) {
+    await pg.drain();
+    await auditRevealEndpoint(server.url, store, clients, fail);
+  }
   await server.close();
 
   // ---------- audit ----------
-  const violations: Violation[] = [];
-  const fail = (check: string, detail: string) => violations.push({ check, detail });
   const latencies: number[] = [];
   const rejections: Record<string, number> = {};
   let decisions = 0;
@@ -123,6 +161,11 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
     }
   }
   for (const c of clients) auditFrames(c, fail);
+  if (sql) {
+    for (const e of dbErrors) fail('db_write', e);
+    for (const m of store.matches.values()) await auditDatabase(sql, m, fail);
+    await sql.close();
+  }
 
   return {
     mode,
@@ -135,6 +178,109 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
     violations,
     clients: clients.filter((c) => c.result?.matchId).length,
   };
+}
+
+/** Writes every record to both stores (the load test compares them). */
+function tee(a: MatchStore, b: MatchStore): MatchStore {
+  return {
+    open: (m) => (a.open(m), b.open(m)),
+    events: (id, e) => (a.events(id, e), b.events(id, e)),
+    input: (id, i) => (a.input(id, i), b.input(id, i)),
+    timing: (id, r) => (a.timing(id, r), b.timing(id, r)),
+    connection: (id, r) => (a.connection(id, r), b.connection(id, r)),
+    rejection: (id, r) => (a.rejection(id, r), b.rejection(id, r)),
+    close: (id, st, at) => (a.close(id, st, at), b.close(id, st, at)),
+    shutdown: async () => {
+      await a.shutdown();
+      await b.shutdown();
+    },
+  };
+}
+
+/** The database must hold exactly what the server logged, and its derived reveal must equal the engine's. */
+const dbChecks = { matches: 0, httpReveals: 0, httpRefusals: 0 };
+
+async function auditDatabase(
+  sql: Sql,
+  m: StoredMatch,
+  fail: (check: string, detail: string) => void,
+): Promise<void> {
+  const id = m.meta.matchId;
+  dbChecks.matches++;
+  const db = await loadMatch(sql, id);
+  if (!db) return fail('db_missing', id);
+  if (db.status !== m.meta.status) fail('db_status', `${id}: ${db.status} vs ${m.meta.status}`);
+  const same = (what: string, a: unknown, b: unknown) => {
+    if (canonicalJson(a) !== canonicalJson(b))
+      fail(`db_${what}`, `${id}: database ${what} differ from the server log`);
+  };
+  same('events', db.events, m.events);
+  same('inputs', db.inputs, m.inputs);
+  same('timings', db.timings, m.timings);
+  same('connections', db.connections, m.connections);
+  same('rejections', db.rejections, m.rejections);
+  const state = replay(m.meta.config, m.meta.seed, m.inputs).state;
+  same('reveal', await revealFromDb(sql, id), viewFor(state, 0).reveal);
+  const [row] = await sql.query<{ n: number }>(
+    'select count(*)::int as n from decisions where match_id = $1',
+    [id],
+  );
+  if (row?.n !== m.events.filter((e) => e.type === 'decision').length)
+    fail('db_derived', `${id}: decision rows ≠ decision events`);
+}
+
+/** Every seated human can reopen their reveal over HTTP; nobody else can. */
+async function auditRevealEndpoint(
+  url: string,
+  store: MemoryStore,
+  clients: ClientLog[],
+  fail: (check: string, detail: string) => void,
+): Promise<void> {
+  const http = url.replace(/^ws/, 'http');
+  const humans = clients
+    .map((c) => ({
+      token: c.frames.find((f): f is Extract<ServerMessage, { type: 'welcome' }> => f.type === 'welcome')
+        ?.token,
+      playerId: c.frames.find((f): f is Extract<ServerMessage, { type: 'welcome' }> => f.type === 'welcome')
+        ?.playerId,
+      matchId: c.result?.matchId ?? null,
+      seat: c.result?.seat ?? null,
+    }))
+    .filter((h) => h.token && h.matchId && h.playerId?.startsWith('p_'));
+  const get = (matchId: string, token: string) =>
+    fetch(`${http}/api/matches/${matchId}/reveal`, { headers: { authorization: `Bearer ${token}` } });
+  for (const h of humans.slice(0, 40)) {
+    const res = await get(h.matchId!, h.token!);
+    if (res.status !== 200) {
+      fail('reveal_http', `${h.matchId}: seated player got ${res.status}`);
+      continue;
+    }
+    const body = MatchRevealResponseSchema.safeParse(await res.json());
+    if (!body.success) {
+      fail('reveal_http', `${h.matchId}: response does not match the schema`);
+      continue;
+    }
+    const m = store.matches.get(h.matchId!)!;
+    const state = replay(m.meta.config, m.meta.seed, m.inputs).state;
+    dbChecks.httpReveals++;
+    if (body.data.seat !== h.seat) fail('reveal_http', `${h.matchId}: wrong seat`);
+    if (canonicalJson(body.data.reveal) !== canonicalJson(viewFor(state, 0).reveal))
+      fail('reveal_http', `${h.matchId}: HTTP reveal ≠ engine reveal`);
+  }
+  // A player from another match, a bogus token, and no token are all refused.
+  const [a, b] = [humans[0], humans.find((h) => h.matchId !== humans[0]?.matchId)];
+  if (a && b) {
+    const res = await get(a.matchId!, b.token!);
+    dbChecks.httpRefusals++;
+    if (res.status !== 404) fail('reveal_http_authz', `player from another match got ${res.status}`);
+  }
+  if (a) {
+    dbChecks.httpRefusals += 2;
+    if ((await get(a.matchId!, 'f'.repeat(48))).status !== 404)
+      fail('reveal_http_authz', 'unknown token not refused');
+    const none = await fetch(`${http}/api/matches/${a.matchId}/reveal`);
+    if (none.status !== 401) fail('reveal_http_authz', 'missing token not refused');
+  }
 }
 
 function auditStored(m: StoredMatch, fail: (check: string, detail: string) => void): void {
@@ -199,7 +345,7 @@ async function main(): Promise<number> {
       byCheck[v.check] ??= { n: 0, eg: v.detail };
       byCheck[v.check]!.n++;
     }
-    console.log(`CANUTELL load test — mode ${mode}, clock ×${o.speed}`);
+    console.log(`CANUTELL load test — mode ${mode}, clock ×${o.speed}, store ${o.store}`);
     console.log(
       `  ${r.matches} matches over WebSockets in ${r.seconds.toFixed(1)}s wall time (${r.clients} seated clients)`,
     );
@@ -210,6 +356,13 @@ async function main(): Promise<number> {
       `  server-measured latency (virtual ms): p10 ${quantile(r.latencies, 0.1)}  p50 ${quantile(r.latencies, 0.5)}  p90 ${quantile(r.latencies, 0.9)}`,
     );
     console.log(`  rejections: ${JSON.stringify(r.rejections)}  (only "late" is acceptable)`);
+    if (o.store === 'postgres') {
+      console.log(
+        `  database: ${dbChecks.matches} matches verified against the server log and engine reveal; ` +
+          `${dbChecks.httpReveals} HTTP reveals checked, ${dbChecks.httpRefusals} unauthorized requests refused`,
+      );
+      dbChecks.matches = dbChecks.httpReveals = dbChecks.httpRefusals = 0;
+    }
     console.log(`  VIOLATIONS: ${r.violations.length}${r.violations.length === 0 ? '  ✓' : '  ✗'}`);
     for (const [check, v] of Object.entries(byCheck)) console.log(`    ${check}: ${v.n}  e.g. ${v.eg}`);
     console.log();

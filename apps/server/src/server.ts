@@ -1,8 +1,9 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { BotClient, POLICY_NAMES } from '@canutell/bots';
+import type { RevealSource } from '@canutell/db';
 import {
   AI_DISCLOSURE,
   ClientMessageSchema,
@@ -16,6 +17,13 @@ import type { Clock } from './clock';
 import { MatchRunner, type SeatLink } from './match-runner';
 import { Matchmaker, type MatchRequest, type Party, type Random } from './matchmaking';
 import type { MatchFlag, MatchMeta, MatchStore, SeatOccupant } from './store';
+
+/**
+ * Every match carries the build phase it was played in. Until Phase 5 (accounts, consent) all players are
+ * guests, so these matches are dev data: never research-eligible, purged before the closed alpha
+ * (DECISIONS "Guest data before accounts").
+ */
+export const BUILD_PHASE_FLAG = 'phase3' as const;
 
 /** Version label for scripted bots in agent seats until Phase 4 agents exist. */
 export const SCRIPTED_AGENT_VERSION = 'scripted-0';
@@ -41,6 +49,10 @@ export interface GameServerOptions {
   log?: (msg: string) => void;
   /** Called when a match ends (tests, load test). */
   onMatchEnd?: (runner: MatchRunner, status: 'completed' | 'aborted') => void;
+  /** Serves GET /api/matches/:id/reveal. Without it the endpoint answers 501 (e.g. JSONL store). */
+  reveals?: RevealSource;
+  /** Allowed origin for the HTTP API (CORS). Bearer tokens, no cookies, so `*` is the default. */
+  corsOrigin?: string;
 }
 
 interface Player {
@@ -143,7 +155,7 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       })),
     };
     const occupants: SeatOccupant[] = roster.map((p, seat) => ({ seat, kind: p.kind, playerId: p.playerId }));
-    const flags: MatchFlag[] = ['phase2'];
+    const flags: MatchFlag[] = [BUILD_PHASE_FLAG];
     if (req.agents > 0) flags.push('scripted_agents');
     if (req.fillers > 0) flags.push('bot_fill');
     if (clock.speed !== 1) flags.push('sped_up');
@@ -224,13 +236,40 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
 
   // ---------- sockets ----------
 
+  const cors = {
+    'access-control-allow-origin': o.corsOrigin ?? '*',
+    'access-control-allow-headers': 'authorization',
+    'access-control-allow-methods': 'GET, OPTIONS',
+  };
+  const reply = (res: ServerResponse, status: number, body?: unknown) => {
+    res.writeHead(status, { ...cors, 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(body === undefined ? '' : JSON.stringify(body));
+  };
   const http: Server = createServer((req, res) => {
-    if (req.url === '/health') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, matches: runners.size }));
+    const path = (req.url ?? '').split('?')[0]!;
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, cors).end();
       return;
     }
-    res.writeHead(404).end();
+    if (path === '/health') return reply(res, 200, { ok: true, matches: runners.size });
+    const m = /^\/api\/matches\/([A-Za-z0-9-]{1,128})\/reveal$/.exec(path);
+    if (m && req.method === 'GET') {
+      // Only a player who held a seat in the match gets an answer; everyone else gets 404.
+      const token = /^Bearer ([0-9a-f]{48})$/.exec(req.headers.authorization ?? '')?.[1];
+      if (!token) return reply(res, 401, { error: 'missing bearer token' });
+      const player = players.get(token);
+      if (!o.reveals) return reply(res, 501, { error: 'reveals need the postgres store' });
+      if (!player || player.kind !== 'human') return reply(res, 404, { error: 'not found' });
+      o.reveals.reveal(m[1]!, player.playerId).then(
+        (r) => (r ? reply(res, 200, r) : reply(res, 404, { error: 'not found' })),
+        (e) => {
+          log(`reveal ${m[1]} failed: ${String(e)}`);
+          reply(res, 500, { error: 'internal error' });
+        },
+      );
+      return;
+    }
+    reply(res, 404, { error: 'not found' });
   });
   const wss = new WebSocketServer({ server: http, maxPayload: MAX_PAYLOAD });
 

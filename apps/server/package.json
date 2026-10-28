@@ -14,7 +14,8 @@
     "@canutell/bots": "workspace:*",
     "@canutell/engine": "workspace:*",
     "@canutell/protocol": "workspace:*",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "@canutell/db": "workspace:*"
   },
   "devDependencies": {
     "@canutell/sim": "workspace:*",

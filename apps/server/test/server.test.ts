@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import { ServerMessageSchema, type ClientMessage, type ServerMessage } from '@canutell/protocol';
+import type { RevealSource } from '@canutell/db';
+import {
+  ServerMessageSchema,
+  type ClientMessage,
+  type MatchRevealResponse,
+  type ServerMessage,
+} from '@canutell/protocol';
 import {
   JsonlStore,
   ManualClock,
@@ -73,7 +79,9 @@ afterEach(async () => {
   server = null;
 });
 
-async function boot(opts: { weights?: number[]; store?: MatchStore; clock?: ManualClock } = {}) {
+async function boot(
+  opts: { weights?: number[]; store?: MatchStore; clock?: ManualClock; reveals?: RevealSource } = {},
+) {
   const clock = opts.clock ?? new ManualClock();
   const store = opts.store ?? new MemoryStore();
   const spawned: string[] = [];
@@ -82,6 +90,7 @@ async function boot(opts: { weights?: number[]; store?: MatchStore; clock?: Manu
     store,
     agentWeights: opts.weights ?? [0, 0, 1],
     spawnBot: (a) => spawned.push(a.kind),
+    reveals: opts.reveals,
   });
   const join = async () => {
     const c = await TestClient.connect(server!.url);
@@ -279,5 +288,60 @@ describe('JSONL persistence (Phase 2 store)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('GET /api/matches/:id/reveal', () => {
+  const fakeReveal = (matchId: string): MatchRevealResponse => ({
+    matchId,
+    mode: 'quick',
+    seat: 2,
+    reveal: {
+      seats: [],
+      ballots: [],
+      votes: [],
+      keyMoments: { biggestStake: null, unreturnedStakes: [], exiles: [] },
+    },
+    myStakes: [],
+  });
+
+  it('answers only a seated player, by bearer token; everyone else gets 401/404', async () => {
+    const asked: [string, string][] = [];
+    const t = await boot({
+      reveals: {
+        reveal: async (matchId, playerId) => {
+          asked.push([matchId, playerId]);
+          return matchId === 'm-ok' ? fakeReveal(matchId) : null;
+        },
+      },
+    });
+    const me = await t.join();
+    const http = server!.url.replace(/^ws/, 'http');
+    const get = (path: string, token?: string) =>
+      fetch(`${http}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+
+    const ok = await get('/api/matches/m-ok/reveal', me.token);
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('access-control-allow-origin')).toBe('*');
+    expect(ok.headers.get('cache-control')).toBe('no-store');
+    expect(await ok.json()).toEqual(fakeReveal('m-ok'));
+    expect(asked).toEqual([['m-ok', me.playerId]]);
+
+    expect((await get('/api/matches/m-other/reveal', me.token)).status).toBe(404);
+    expect((await get('/api/matches/m-ok/reveal')).status).toBe(401);
+    expect((await get('/api/matches/m-ok/reveal', 'a'.repeat(48))).status).toBe(404);
+    expect((await get('/api/matches/../etc/reveal', me.token)).status).toBe(404);
+    const pre = await fetch(`${http}/api/matches/m-ok/reveal`, { method: 'OPTIONS' });
+    expect(pre.status).toBe(204);
+    expect(pre.headers.get('access-control-allow-headers')).toBe('authorization');
+  });
+
+  it('answers 501 when the server has no database', async () => {
+    const t = await boot();
+    const me = await t.join();
+    const res = await fetch(`${server!.url.replace(/^ws/, 'http')}/api/matches/x/reveal`, {
+      headers: { authorization: `Bearer ${me.token}` },
+    });
+    expect(res.status).toBe(501);
   });
 });
