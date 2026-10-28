@@ -1,0 +1,1533 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "welcome"
+        },
+        "playerId": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "serverTime": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "resumedMatchId": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["type", "playerId", "token", "serverTime", "resumedMatchId"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "queue.status"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": ["full", "quick"]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": ["searching", "idle"]
+        },
+        "disclosure": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "mode", "state", "disclosure"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "party.state"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["full", "quick"]
+        },
+        "members": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "isHost": {
+          "type": "boolean"
+        },
+        "canStart": {
+          "type": "boolean"
+        },
+        "disclosure": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "code", "mode", "members", "isHost", "canStart", "disclosure"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "party.closed"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "code", "reason"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "match.found"
+        },
+        "matchId": {
+          "type": "string"
+        },
+        "seat": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["full", "quick"]
+        },
+        "disclosure": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "matchId", "seat", "mode", "disclosure"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "view"
+        },
+        "matchId": {
+          "type": "string"
+        },
+        "viewVersion": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "serverTime": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "view": {
+          "type": "object",
+          "properties": {
+            "matchId": {
+              "type": "string"
+            },
+            "rulesetVersion": {
+              "type": "string"
+            },
+            "mode": {
+              "type": "string",
+              "enum": ["full", "quick"]
+            },
+            "revealMode": {
+              "type": "string",
+              "enum": ["individual", "aggregate"]
+            },
+            "totalRounds": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "seat": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5
+            },
+            "round": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "phase": {
+              "type": "string",
+              "enum": ["lobby", "invest", "deal", "gamble", "vote", "final_ballot", "reveal"]
+            },
+            "phaseStartedAt": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "deadline": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "self": {
+              "type": "object",
+              "properties": {
+                "balance": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "exiledRound": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": ["balance", "exiledRound"],
+              "additionalProperties": false
+            },
+            "seats": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "seatId": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5
+                  },
+                  "exiledRound": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": ["seatId", "exiledRound"],
+                "additionalProperties": false
+              }
+            },
+            "prompts": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "invest"
+                      },
+                      "min": {
+                        "type": "number",
+                        "const": 0
+                      },
+                      "max": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": ["kind", "min", "max"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "stake"
+                      },
+                      "targets": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 5
+                        }
+                      },
+                      "min": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "max": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": ["kind", "targets", "min", "max"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "return"
+                      },
+                      "stakeId": {
+                        "type": "string"
+                      },
+                      "from": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 5
+                      },
+                      "received": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "min": {
+                        "type": "number",
+                        "const": 0
+                      },
+                      "max": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "deadlineRound": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": ["kind", "stakeId", "from", "received", "min", "max", "deadlineRound"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "gamble"
+                      },
+                      "menu": {
+                        "type": "string",
+                        "enum": ["risk", "delay"]
+                      },
+                      "options": {
+                        "type": "object",
+                        "properties": {
+                          "A": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "sure"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "chance"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "percent": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount", "percent"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "now"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "at_end"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "at_end_if_not_exiled"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "B": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "sure"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "chance"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "percent": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount", "percent"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "now"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "at_end"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "at_end_if_not_exiled"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "C": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "sure"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "chance"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "percent": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount", "percent"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "now"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "at_end"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "at_end_if_not_exiled"
+                                  },
+                                  "amount": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": ["kind", "amount"],
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "required": ["A", "B", "C"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": ["kind", "menu", "options"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "vote"
+                      },
+                      "targets": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 5
+                        }
+                      }
+                    },
+                    "required": ["kind", "targets"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "ballot"
+                      },
+                      "targets": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 5
+                        }
+                      }
+                    },
+                    "required": ["kind", "targets"],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "chat": {
+              "type": "object",
+              "properties": {
+                "channels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["table", "dm", "exile"]
+                  }
+                },
+                "dmTargets": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5
+                  }
+                },
+                "messages": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "round": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "phase": {
+                        "type": "string",
+                        "enum": ["invest", "deal", "gamble", "vote", "final_ballot"]
+                      },
+                      "from": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 5
+                      },
+                      "channel": {
+                        "type": "string",
+                        "enum": ["table", "dm", "exile"]
+                      },
+                      "to": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 5
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": ["round", "phase", "from", "channel", "to", "text", "at"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": ["channels", "dmTargets", "messages"],
+              "additionalProperties": false
+            },
+            "investResults": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "round": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "pot": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "share": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "activeCount": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "contributions": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "seat": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 5
+                            },
+                            "amount": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": ["seat", "amount"],
+                          "additionalProperties": false
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": ["round", "pot", "share", "activeCount", "contributions"],
+                "additionalProperties": false
+              }
+            },
+            "myContributions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "round": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "amount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": ["round", "amount"],
+                "additionalProperties": false
+              }
+            },
+            "stakesSent": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "stakeId": {
+                    "type": "string"
+                  },
+                  "round": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "to": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5
+                  },
+                  "sent": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "received": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "returned": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "returnDeadlineRound": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": ["stakeId", "round", "to", "sent", "received", "returned", "returnDeadlineRound"],
+                "additionalProperties": false
+              }
+            },
+            "stakesReceived": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "stakeId": {
+                    "type": "string"
+                  },
+                  "round": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "from": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5
+                  },
+                  "sent": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "received": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "returned": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "returnDeadlineRound": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "stakeId",
+                  "round",
+                  "from",
+                  "sent",
+                  "received",
+                  "returned",
+                  "returnDeadlineRound"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "myGambles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "round": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "menu": {
+                    "type": "string",
+                    "enum": ["risk", "delay"]
+                  },
+                  "option": {
+                    "type": "string",
+                    "enum": ["A", "B", "C"]
+                  },
+                  "immediate": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": ["round", "menu", "option", "immediate"],
+                "additionalProperties": false
+              }
+            },
+            "myDelays": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "round": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "option": {
+                    "type": "string",
+                    "enum": ["A", "B", "C"]
+                  },
+                  "amount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "onlyIfNotExiled": {
+                    "type": "boolean"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["pending", "paid", "forfeited"]
+                  }
+                },
+                "required": ["round", "option", "amount", "onlyIfNotExiled", "status"],
+                "additionalProperties": false
+              }
+            },
+            "myVotes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "round": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "target": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 5
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": ["round", "target"],
+                "additionalProperties": false
+              }
+            },
+            "voteResults": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "round": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "exiled": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 5
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": ["round", "exiled"],
+                "additionalProperties": false
+              }
+            },
+            "myBallot": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "labels": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "target": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 5
+                          },
+                          "label": {
+                            "type": "string",
+                            "enum": ["agent", "human"]
+                          },
+                          "confidence": {
+                            "type": "integer",
+                            "minimum": 50,
+                            "maximum": 100
+                          }
+                        },
+                        "required": ["target", "label", "confidence"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["labels"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reveal": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "seats": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "seatId": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 5
+                          },
+                          "isAgent": {
+                            "type": "boolean"
+                          },
+                          "agentVersion": {
+                            "type": ["string", "null"]
+                          },
+                          "exiledRound": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "coinsBeforeReveal": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "delayPaid": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "exileBonus": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "ballotPayoff": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "finalScore": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "ballotAccuracy": {
+                            "type": "object",
+                            "properties": {
+                              "labeled": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "correct": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": ["labeled", "correct"],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "seatId",
+                          "isAgent",
+                          "agentVersion",
+                          "exiledRound",
+                          "coinsBeforeReveal",
+                          "delayPaid",
+                          "exileBonus",
+                          "ballotPayoff",
+                          "finalScore",
+                          "ballotAccuracy"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "ballots": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "voter": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 5
+                          },
+                          "timedOut": {
+                            "type": "boolean"
+                          },
+                          "labels": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "target": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 5
+                                },
+                                "label": {
+                                  "type": "string",
+                                  "enum": ["agent", "human"]
+                                },
+                                "confidence": {
+                                  "type": "integer",
+                                  "minimum": 50,
+                                  "maximum": 100
+                                },
+                                "payoff": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "applied": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": ["target", "label", "confidence", "payoff", "applied"],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": ["voter", "timedOut", "labels"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "votes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "round": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          },
+                          "exiled": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 5
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "tally": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "ballots": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "voter": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 5
+                                },
+                                "target": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 5
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "timedOut": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": ["voter", "target", "timedOut"],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": ["round", "exiled", "tally", "ballots"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "keyMoments": {
+                      "type": "object",
+                      "properties": {
+                        "biggestStake": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "stakeId": {
+                                  "type": "string"
+                                },
+                                "round": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "from": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 5
+                                },
+                                "to": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 5
+                                },
+                                "sent": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "returned": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": ["stakeId", "round", "from", "to", "sent", "returned"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "unreturnedStakes": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "stakeId": {
+                                "type": "string"
+                              },
+                              "round": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              "from": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 5
+                              },
+                              "to": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 5
+                              },
+                              "sent": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "returned": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": ["stakeId", "round", "from", "to", "sent", "returned"],
+                            "additionalProperties": false
+                          }
+                        },
+                        "exiles": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "round": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              "seat": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 5
+                              },
+                              "isAgent": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": ["round", "seat", "isAgent"],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": ["biggestStake", "unreturnedStakes", "exiles"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["seats", "ballots", "votes", "keyMoments"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "matchId",
+            "rulesetVersion",
+            "mode",
+            "revealMode",
+            "totalRounds",
+            "seat",
+            "round",
+            "phase",
+            "phaseStartedAt",
+            "deadline",
+            "self",
+            "seats",
+            "prompts",
+            "chat",
+            "investResults",
+            "myContributions",
+            "stakesSent",
+            "stakesReceived",
+            "myGambles",
+            "myDelays",
+            "myVotes",
+            "voteResults",
+            "myBallot",
+            "reveal"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": ["type", "matchId", "viewVersion", "serverTime", "view"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "action.ack"
+        },
+        "clientActionId": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "clientActionId"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "action.rejected"
+        },
+        "clientActionId": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "clientActionId", "code", "message"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "error"
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "code", "message"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "pong"
+        },
+        "t": {
+          "type": "number"
+        },
+        "serverTime": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": ["type", "t", "serverTime"],
+      "additionalProperties": false
+    }
+  ]
+}

@@ -1,0 +1,416 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "hello"
+        },
+        "token": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["type", "token"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "queue.join"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["full", "quick"]
+        }
+      },
+      "required": ["type", "mode"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "queue.leave"
+        }
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "party.create"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["full", "quick"]
+        }
+      },
+      "required": ["type", "mode"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "party.join"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[A-Z0-9]+$"
+        }
+      },
+      "required": ["type", "code"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "party.leave"
+        }
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "party.start"
+        }
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "action"
+        },
+        "matchId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "clientActionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "action": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "invest"
+                },
+                "seat": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 5
+                },
+                "amount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 20
+                }
+              },
+              "required": ["type", "seat", "amount"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "stake"
+                },
+                "seat": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 5
+                },
+                "to": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 5
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "amount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 20
+                }
+              },
+              "required": ["type", "seat", "to", "amount"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "return"
+                },
+                "seat": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 5
+                },
+                "stakeId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "amount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 40
+                }
+              },
+              "required": ["type", "seat", "stakeId", "amount"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "gamble"
+                },
+                "seat": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 5
+                },
+                "option": {
+                  "type": "string",
+                  "enum": ["A", "B", "C"]
+                }
+              },
+              "required": ["type", "seat", "option"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "vote"
+                },
+                "seat": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 5
+                },
+                "target": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 5
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": ["type", "seat", "target"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "ballot"
+                },
+                "seat": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 5
+                },
+                "labels": {
+                  "maxItems": 5,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "target": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 5
+                      },
+                      "label": {
+                        "type": "string",
+                        "enum": ["agent", "human"]
+                      },
+                      "confidence": {
+                        "type": "integer",
+                        "minimum": 50,
+                        "maximum": 100
+                      }
+                    },
+                    "required": ["target", "label", "confidence"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": ["type", "seat", "labels"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "chat"
+                },
+                "seat": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 5
+                },
+                "channel": {
+                  "type": "string",
+                  "enum": ["table", "dm", "exile"]
+                },
+                "to": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 5
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                "client": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "typingMs": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 3600000
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "pasted": {
+                          "type": ["boolean", "null"]
+                        },
+                        "clientSentAt": {
+                          "type": ["number", "null"]
+                        }
+                      },
+                      "required": ["typingMs", "pasted", "clientSentAt"],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": ["type", "seat", "channel", "to", "text", "client"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "seenPhase": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "round": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "phase": {
+                  "type": "string",
+                  "enum": ["lobby", "invest", "deal", "gamble", "vote", "final_ballot", "reveal"]
+                }
+              },
+              "required": ["round", "phase"],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "clientSentAt": {
+          "type": ["number", "null"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": ["type", "matchId", "clientActionId", "action", "seenPhase", "clientSentAt"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "ping"
+        },
+        "t": {
+          "type": "number"
+        }
+      },
+      "required": ["type", "t"],
+      "additionalProperties": false
+    }
+  ]
+}

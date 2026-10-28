@@ -5,3 +5,4 @@ export * from './actions';
 export * from './events';
 export * from './views';
 export * from './messages';
+export * from './json-schema';

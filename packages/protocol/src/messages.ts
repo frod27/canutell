@@ -44,6 +44,11 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
     seenPhase: z.object({ round: z.number().int().nonnegative(), phase: PhaseSchema }).nullable(),
     /** Client clock. Stored separately and never trusted (CLAUDE.md invariant 6). */
     clientSentAt: z.number().nullable(),
+    /**
+     * Agent seats only: the decision model's confidence in this choice, 0–1 (SPEC §Agents). Stored in
+     * agent_annotations. A human seat sending it is rejected (DECISIONS "Agent confidence").
+     */
+    confidence: z.number().min(0).max(1).optional(),
   }),
   z.object({ type: z.literal('ping'), t: z.number() }),
 ]);
