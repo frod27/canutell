@@ -13,7 +13,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "loadtest": "tsx apps/server/src/tools/loadtest.ts",
+    "serve": "tsx apps/server/src/main.ts",
+    "serve:dev": "CLOCK_SPEED=1 FILL_BOTS_MS=5000 tsx apps/server/src/main.ts",
+    "web": "pnpm --filter @canutell/web dev",
+    "web:build": "pnpm --filter @canutell/web build"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

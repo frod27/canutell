@@ -3,5 +3,13 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["packages/*/src", "packages/*/test", "sim/src", "sim/test", "*.config.ts"]
+  "include": [
+    "packages/*/src",
+    "packages/*/test",
+    "sim/src",
+    "sim/test",
+    "apps/server/src",
+    "apps/server/test",
+    "*.config.ts"
+  ]
 }

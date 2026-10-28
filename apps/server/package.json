@@ -1,6 +1,23 @@
 {
   "name": "@canutell/server",
-  "version": "0.0.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Placeholder — not built until a later phase (see CLAUDE.md §Build phases)."
+  "type": "module",
+  "description": "Server-authoritative CANUTELL game server: WebSockets, matchmaking, timers, per-seat views.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@canutell/bots": "workspace:*",
+    "@canutell/engine": "workspace:*",
+    "@canutell/protocol": "workspace:*",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@canutell/sim": "workspace:*",
+    "@types/ws": "^8.18.2"
+  }
 }

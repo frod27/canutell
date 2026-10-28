@@ -6,3 +6,7 @@ coverage/
 sim/out/
 __pycache__/
 .venv/
+data/
+.next/
+next-env.d.ts
+apps/server/out/
