@@ -12,6 +12,11 @@ export default tseslint.config(
     },
   },
   {
+    // Plain Node scripts (e.g. the server bundle build).
+    files: ['**/*.mjs'],
+    languageOptions: { globals: { console: 'readonly', process: 'readonly' } },
+  },
+  {
     // Invariant 1: all randomness goes through the seeded RNG; invariant 2: no clock.
     files: ['packages/engine/src/**/*.ts'],
     rules: {

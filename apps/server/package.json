@@ -8,7 +8,9 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "start": "tsx src/main.ts"
+    "start": "tsx src/main.ts",
+    "build": "node scripts/build.mjs",
+    "start:dist": "CANUTELL_MIGRATIONS_DIR=dist/migrations node dist/server.mjs"
   },
   "dependencies": {
     "@canutell/bots": "workspace:*",
@@ -22,6 +24,7 @@
   "devDependencies": {
     "@canutell/sim": "workspace:*",
     "@electric-sql/pglite": "0.5.13",
-    "@types/ws": "^8.18.2"
+    "@types/ws": "^8.18.2",
+    "esbuild": "0.28.2"
   }
 }

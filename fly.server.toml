@@ -1,0 +1,42 @@
+# CANUTELL game server on Fly.io (docs/ALPHA.md). Deploy from the repo root:
+#   fly deploy --config fly.server.toml
+# Secrets (never in this file): fly secrets set --app canutell-server DATABASE_URL=… AGENT_SERVICE_SECRET=…
+# Matches live in memory: keep exactly ONE machine (fly scale count 1) and deploy outside game nights.
+
+app = "canutell-server"
+primary_region = "mad"
+
+[build]
+  dockerfile = "apps/server/Dockerfile"
+
+[env]
+  PORT = "8787"
+  HOST = "::"
+  ACCOUNTS_ONLY = "1"
+  INVITES_REQUIRED = "1"
+  ALPHA = "1"
+  GAME_NIGHTS = "Tue,Thu,Sun 20:00-22:00 Europe/Madrid"
+  WEBAUTHN_RP_ID = "canutell.example"
+  WEBAUTHN_ORIGINS = "https://canutell.example"
+  CORS_ORIGIN = "https://canutell.example"
+  AGENT_SERVICE_URL = "http://canutell-agents.internal:8790"
+  AGENT_CALLBACK_URL = "ws://canutell-server.internal:8787"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  # Never stop the machine: it holds running matches and their timers.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

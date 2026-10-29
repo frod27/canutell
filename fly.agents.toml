@@ -1,0 +1,31 @@
+# CANUTELL agent service on Fly.io (docs/ALPHA.md). Private only: no public ports; the game server reaches it
+# at canutell-agents.internal over Fly's private network. Deploy from the repo root:
+#   fly deploy --config fly.agents.toml
+# Secrets: fly secrets set --app canutell-agents AGENT_SERVICE_SECRET=… ANTHROPIC_API_KEY=…
+
+app = "canutell-agents"
+primary_region = "mad"
+
+[build]
+  dockerfile = "services/agents/Dockerfile"
+
+[env]
+  AGENT_HOST = "::"
+  AGENT_PORT = "8790"
+  AGENT_SERVER_URLS = "ws://canutell-server.internal:8787"
+  AGENT_LOG_LEVEL = "INFO"
+  # Claude model for agent chat (DECISIONS "Chat model"); claude-haiku-5-5 is cheaper and faster.
+  AGENT_CHAT_MODEL = "claude-opus-5-5"
+
+[checks]
+  [checks.health]
+    type = "http"
+    port = 8790
+    path = "/health"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
