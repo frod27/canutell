@@ -7,13 +7,14 @@ import type { AccountSummary } from '@canutell/protocol';
 import { AgeForm, ConsentBlock, ageErrorText } from '@/components/AccountParts';
 import { ApiError, answerAge, setResearchConsent, signUp } from '@/lib/account';
 
-// Sign-up, one step per screen (docs/proposals/phase-5.md §3): terms → passkey (T1) → age (T2) →
-// research opt-in (separate, unticked, skippable) → done.
+// Sign-up, one step per screen (docs/proposals/phase-5.md §3, phase-6.md §2): invite code (closed alpha) →
+// terms → passkey (T1) → age (T2) → research opt-in (separate, unticked, skippable) → done.
 
-type Step = 'terms' | 'passkey' | 'age' | 'research' | 'done';
+type Step = 'invite' | 'terms' | 'passkey' | 'age' | 'research' | 'done';
 
 export default function SignUp() {
-  const [step, setStep] = useState<Step>('terms');
+  const [step, setStep] = useState<Step>('invite');
+  const [invite, setInvite] = useState('');
   const [account, setAccount] = useState<AccountSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -26,9 +27,13 @@ export default function SignUp() {
     try {
       await fn();
     } catch (e) {
-      setError(
-        e instanceof ApiError ? ageErrorText(e.code) : 'The passkey was not created. Please try again.',
-      );
+      if (e instanceof ApiError && e.code === 'invalid_invite') {
+        setError('That invite code isn’t valid (or has been used up). Check it and try again.');
+        setStep('invite');
+      } else
+        setError(
+          e instanceof ApiError ? ageErrorText(e.code) : 'The passkey was not created. Please try again.',
+        );
     } finally {
       setBusy(false);
     }
@@ -38,6 +43,35 @@ export default function SignUp() {
     <main>
       <h1>CANUTELL</h1>
       <section className="card">
+        {step === 'invite' && (
+          <>
+            <h2>Create an account</h2>
+            <p>CANUTELL is in a closed alpha. Enter the invite code you were given.</p>
+            <form
+              className="stack"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (invite.trim()) setStep('terms');
+              }}
+            >
+              <input
+                aria-label="Invite code"
+                placeholder="XXXX-XXXX-XXXX"
+                autoCapitalize="characters"
+                autoComplete="off"
+                maxLength={32}
+                value={invite}
+                onChange={(e) => setInvite(e.target.value.toUpperCase())}
+              />
+              <button type="submit" disabled={!invite.trim()}>
+                Continue
+              </button>
+            </form>
+            <button className="secondary" onClick={() => setStep('terms')}>
+              I don’t have a code
+            </button>
+          </>
+        )}
         {step === 'terms' && (
           <>
             <h2>Create an account</h2>
@@ -62,7 +96,7 @@ export default function SignUp() {
               disabled={busy || !supported}
               onClick={() =>
                 run(async () => {
-                  setAccount(await signUp());
+                  setAccount(await signUp(invite.trim() || undefined));
                   setStep('age');
                 })
               }

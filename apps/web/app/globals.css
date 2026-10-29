@@ -141,6 +141,10 @@ button.small {
   padding: 4px 10px;
   margin-left: 8px;
 }
+textarea {
+  width: 100%;
+  margin: 8px 0;
+}
 .consent p {
   margin: 0.5rem 0;
 }
@@ -156,7 +160,8 @@ button:disabled {
   cursor: default;
 }
 input,
-select {
+select,
+textarea {
   font: inherit;
   padding: 8px;
   border-radius: 8px;

@@ -8,6 +8,7 @@ import {
   PasskeyListResponseSchema,
   SessionResponseSchema,
   type AccountSummary,
+  type FeedbackRequest,
   type PasskeyListResponse,
 } from '@canutell/protocol';
 import { serverHttpUrl } from './useGame';
@@ -62,9 +63,13 @@ async function api(method: string, path: string, body?: unknown): Promise<unknow
 }
 
 /** Create a passkey and a T1 account. The player has accepted terms version `CONSENT_VERSIONS.terms`. */
-export async function signUp(): Promise<AccountSummary> {
+/** `invite`: the closed-alpha invite code; checked before the passkey is created. */
+export async function signUp(invite?: string): Promise<AccountSummary> {
   const o = CeremonyOptionsResponseSchema.parse(
-    await api('POST', '/api/auth/register/options', { termsVersion: CONSENT_VERSIONS.terms }),
+    await api('POST', '/api/auth/register/options', {
+      termsVersion: CONSENT_VERSIONS.terms,
+      ...(invite ? { invite } : {}),
+    }),
   );
   const response = await startRegistration({ optionsJSON: o.options as never });
   const r = SessionResponseSchema.parse(
@@ -118,6 +123,11 @@ export async function signOutEverywhere(): Promise<void> {
 export async function deleteAccount(): Promise<void> {
   await api('DELETE', '/api/me');
   writeSession(null);
+}
+
+/** The post-match survey (product data only; never used for training). */
+export async function submitFeedback(matchId: string, f: FeedbackRequest): Promise<void> {
+  await api('POST', `/api/matches/${encodeURIComponent(matchId)}/feedback`, f);
 }
 
 export const TRUST_MEANING: Record<AccountSummary['trustLevel'], string> = {

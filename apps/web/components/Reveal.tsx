@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import type { MatchRevealResponse, RevealView, SeatId } from '@canutell/protocol';
+import { FunSurvey } from './FunSurvey';
 import { seatName } from './Match';
 
 // SPEC §Reveal: every seat's role and agent version, each player's ballot accuracy, final scores and key
@@ -183,6 +184,7 @@ export function Reveal({ matchId, seat, reveal: r, myStakes, onDone }: RevealPro
           </Link>
         </div>
       </section>
+      <FunSurvey matchId={matchId} />
     </>
   );
 }

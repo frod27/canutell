@@ -1,10 +1,11 @@
-// Browser end-to-end test of Phase 5 accounts, with real WebAuthn ceremonies (Chromium's virtual
+// Browser end-to-end test of accounts (Phase 5) in closed-alpha mode (Phase 6), with real WebAuthn ceremonies (Chromium's virtual
 // authenticator). It starts its own game server (so it can restart it) against DATABASE_URL, and the built
 // web app (run `pnpm web:build` first).
 //
 //   DATABASE_URL=postgres://… node apps/web/e2e/accounts.mjs [screenshotDir]
 //
-// Flow: sign up (terms → passkey → age → research) → play a quick match to Reveal → the headless browser
+// Flow: a signed-out visitor sees the closed-alpha lobby and the game night → sign up with an invite (invite →
+// terms → passkey → age → research) → play a quick match to Reveal → answer the survey → the headless browser
 // is flagged and trust drops one level → restart the server → sign in on a second "device" (the passkey
 // copied, as a synced passkey would be) → reopen the reveal there → a reviewer clears the flag → turn
 // research consent off → delete the account. Database checks at each step.
@@ -62,6 +63,10 @@ const serverEnv = {
   FILL_BOTS_MS: '500',
   WEBAUTHN_RP_ID: 'localhost',
   WEBAUTHN_ORIGINS: WEB,
+  // Closed alpha (Phase 6). ALPHA itself is off: the server refuses it with dev bot fill, which this test needs.
+  ACCOUNTS_ONLY: '1',
+  INVITES_REQUIRED: '1',
+  GAME_NIGHTS: 'Mon,Tue,Wed,Thu,Fri,Sat,Sun 20:00-22:00 Europe/Madrid',
 };
 const startServer = () =>
   start(join(ROOT, 'node_modules/.bin/tsx'), ['apps/server/src/main.ts'], serverEnv, /listening on/);
@@ -107,7 +112,32 @@ const shot = async (page, name) => shots && page.screenshot({ path: `${shots}/${
 try {
   // ---------- device A: sign up ----------
   const a = await device();
-  await a.page.goto(`${WEB}/signup`);
+  await a.page.goto(WEB);
+  await a.page.getByRole('heading', { name: 'Closed alpha' }).waitFor({ timeout: 15_000 });
+  check(
+    'signed-out visitors see the closed-alpha lobby with the game night',
+    await a.page.getByTestId('game-night').isVisible(),
+  );
+  await shot(a.page, 'a0-closed-alpha');
+  const invite = /: ([A-Z2-9-]{14})$/m.exec(
+    execFileSync(
+      join(ROOT, 'node_modules/.bin/tsx'),
+      ['packages/db/src/cli.ts', 'invite', 'create', '--uses', '1', '--label', 'e2e'],
+      { cwd: ROOT, env: { ...process.env, DATABASE_URL: DB }, encoding: 'utf8' },
+    ).trim(),
+  )[1];
+  await a.page.getByRole('link', { name: 'I have an invite' }).click();
+  await a.page.getByLabel('Invite code').fill('WRONG-CODE-0000');
+  await a.page.getByRole('button', { name: 'Continue' }).click();
+  await a.page.getByRole('button', { name: 'I agree' }).click();
+  await a.page.getByRole('button', { name: 'Create passkey' }).click();
+  await a.page.getByText(/That invite code isn’t valid/).waitFor();
+  check(
+    'a wrong invite is refused before any passkey is made',
+    q('select count(*) from identity.passkeys') === '0',
+  );
+  await a.page.getByLabel('Invite code').fill(invite.toLowerCase());
+  await a.page.getByRole('button', { name: 'Continue' }).click();
   await a.page.getByRole('heading', { name: /Terms of play/ }).waitFor();
   await shot(a.page, 'a1-terms');
   await a.page.getByRole('button', { name: 'I agree' }).click();
@@ -155,11 +185,29 @@ try {
   }
   await a.page.getByRole('heading', { name: 'Reveal' }).waitFor({ timeout: 10_000 });
   await shot(a.page, 'a3-reveal');
+  await a.page.getByRole('radio', { name: '4' }).click();
+  await a.page.getByLabel('Great chat').check();
+  await a.page.getByLabel('Comment').fill('loved it, write me at me@example.com');
+  await a.page.getByRole('button', { name: 'Send feedback' }).click();
+  await a.page.getByTestId('survey-done').waitFor({ timeout: 10_000 });
   await a.page.getByRole('link', { name: 'Permanent link to this reveal' }).click();
   await a.page.waitForURL(/\/match\//);
   const revealUrl = a.page.url();
   const matchId = revealUrl.split('/match/')[1];
   await a.page.waitForTimeout(500);
+  const survey = q(
+    `select fun || '|' || array_to_string(tags, ',') || '|' || comment from match_feedback where match_id = '${matchId}'`,
+  );
+  check(
+    'survey stored once, comment masked',
+    survey === '4|great_chat|loved it, write me at [email]',
+    survey,
+  );
+  check(
+    'invite consumed and recorded',
+    q(`select uses from identity.invites`) === '1' &&
+      q(`select count(*) from identity.identities where invite_id is not null`) === '1',
+  );
 
   const seat = q(
     `select seat_id || ',' || trust_level_at_match from seats where match_id = '${matchId}' and player_id = '${playerId}'`,
@@ -258,7 +306,11 @@ try {
   await b.page.getByRole('button', { name: 'Delete my account' }).click();
   await b.page.getByRole('button', { name: 'Yes, delete it' }).click();
   await b.page.waitForURL(`${WEB}/`);
-  await b.page.getByText('Playing as a guest.').waitFor({ timeout: 10_000 });
+  await b.page.getByRole('heading', { name: 'Closed alpha' }).waitFor({ timeout: 10_000 });
+  check(
+    'survey answer deleted with the account',
+    q(`select count(*) from match_feedback where match_id = '${matchId}'`) === '0',
+  );
   check(
     'identity erased',
     q(`select count(*) from identity.identities where player_id = '${playerId}'`) === '0',

@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ACCOUNT_REQUIRED,
+  GameNightsSchema,
   ServerMessageSchema,
   type AccountSummary,
   type Action,
   type ClientEnv,
   type ClientMessage,
+  type GameNights,
   type Mode,
   type ServerMessage,
   type SeatView,
@@ -19,6 +22,10 @@ export interface GameState {
   playerId: string | null;
   /** This player's own account when signed in; null for guests. */
   account: AccountSummary | null;
+  /** Closed alpha: the server admits accounts only and this browser isn't signed in. */
+  accountRequired: boolean;
+  /** Upcoming game nights (the same for everyone). */
+  gameNights: GameNights | null;
   queue: Msg<'queue.status'> | null;
   party: Msg<'party.state'> | null;
   partyClosed: string | null;
@@ -98,6 +105,8 @@ export function useGame() {
     connected: false,
     playerId: null,
     account: null,
+    accountRequired: false,
+    gameNights: null,
     queue: null,
     party: null,
     partyClosed: null,
@@ -144,6 +153,16 @@ export function useGame() {
           }
           socket.send(JSON.stringify({ type: 'client.env', env: clientEnv() } satisfies ClientMessage));
         }
+        if (m.type === 'error' && m.code === 'session_invalid') clearSessionToken();
+        if (m.type === 'error' && m.code === ACCOUNT_REQUIRED)
+          // No welcome for a refused visitor: fetch the (public, same-for-everyone) schedule instead.
+          void fetch(`${serverHttpUrl()}/api/game-nights`)
+            .then((r) => r.json())
+            .then((j) => {
+              const g = GameNightsSchema.nullable().safeParse(j);
+              if (g.success) setState((s) => ({ ...s, gameNights: g.data }));
+            })
+            .catch(() => {});
         if (m.type === 'view') viewRef.current = m.view;
       };
     };
@@ -206,7 +225,14 @@ export function useGame() {
 function reduce(s: GameState, m: ServerMessage): GameState {
   switch (m.type) {
     case 'welcome':
-      return { ...s, playerId: m.playerId, account: m.account, clockOffset: m.serverTime - Date.now() };
+      return {
+        ...s,
+        playerId: m.playerId,
+        account: m.account,
+        accountRequired: false,
+        gameNights: m.gameNights,
+        clockOffset: m.serverTime - Date.now(),
+      };
     case 'queue.status':
       return { ...s, queue: m.state === 'idle' ? null : m };
     case 'party.state':
@@ -223,6 +249,8 @@ function reduce(s: GameState, m: ServerMessage): GameState {
         notice: m.code === 'late' ? 'Too late — that phase already ended.' : `Rejected: ${m.message}`,
       };
     case 'error':
+      if (m.code === ACCOUNT_REQUIRED) return { ...s, accountRequired: true, notice: null };
+      if (m.code === 'session_invalid') return s;
       return { ...s, notice: m.message };
     default:
       return s;
