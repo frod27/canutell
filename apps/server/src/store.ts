@@ -10,6 +10,7 @@ import {
 import { join } from 'node:path';
 import type {
   AnnotationRecord,
+  ClientSignalRecord,
   ConnectionRecord,
   MatchMeta,
   MatchStatus,
@@ -55,6 +56,7 @@ export class MemoryStore implements MatchStore {
       connections: [],
       rejections: [],
       annotations: [],
+      clientSignals: [],
     });
   }
   events(id: string, events: readonly MatchEvent[]): void {
@@ -75,6 +77,9 @@ export class MemoryStore implements MatchStore {
   annotation(id: string, r: AnnotationRecord): void {
     this.get(id).annotations.push(r);
   }
+  clientSignal(id: string, r: ClientSignalRecord): void {
+    this.get(id).clientSignals.push(r);
+  }
   close(id: string, status: Exclude<MatchStatus, 'running'>, at: number): void {
     const m = this.get(id);
     m.meta.status = status;
@@ -83,7 +88,15 @@ export class MemoryStore implements MatchStore {
   async shutdown(): Promise<void> {}
 }
 
-const STREAMS = ['events', 'inputs', 'timings', 'connections', 'rejections', 'annotations'] as const;
+const STREAMS = [
+  'events',
+  'inputs',
+  'timings',
+  'connections',
+  'rejections',
+  'annotations',
+  'clientSignals',
+] as const;
 type StreamName = (typeof STREAMS)[number];
 
 /**
@@ -143,6 +156,9 @@ export class JsonlStore implements MatchStore {
   annotation(id: string, r: AnnotationRecord): void {
     this.write(id, 'annotations', r);
   }
+  clientSignal(id: string, r: ClientSignalRecord): void {
+    this.write(id, 'clientSignals', r);
+  }
   close(id: string, status: Exclude<MatchStatus, 'running'>, at: number): void {
     const m = this.open_.get(id);
     if (!m) return;
@@ -179,6 +195,7 @@ export class JsonlStore implements MatchStore {
       connections: lines('connections'),
       rejections: lines('rejections'),
       annotations: lines('annotations'),
+      clientSignals: lines('clientSignals'),
     };
   }
 }

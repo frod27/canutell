@@ -7,7 +7,12 @@ import { parseArgs } from 'node:util';
 import { BotClient, POLICY_NAMES, type BotResult } from '@canutell/bots';
 import {
   PostgresStore,
+  answerAge,
   canonicalJson,
+  createAccount,
+  createSession,
+  integrityApplies,
+  setConsent,
   dbRevealSource,
   loadMatch,
   pgSql,
@@ -17,7 +22,15 @@ import {
   type Sql,
 } from '@canutell/db';
 import { hashJson, replay, viewFor } from '@canutell/engine';
-import { MatchRevealResponseSchema, ModeSchema, type Mode, type ServerMessage } from '@canutell/protocol';
+import {
+  MatchRevealResponseSchema,
+  ModeSchema,
+  type ClientEnv,
+  type Mode,
+  type ServerMessage,
+  type TrustLevel,
+} from '@canutell/protocol';
+import type { PasskeyCeremonies } from '../accounts-api';
 import { auditMatch, type Violation } from '@canutell/sim';
 import { ScaledClock } from '../clock';
 import { startGameServer } from '../server';
@@ -42,6 +55,17 @@ import { BASELINE_AGENT_VERSION, agentServiceSeater, type AgentSeater } from '..
 //   • the reveal rebuilt from derived tables equals the engine's reveal, for every match
 //   • derived rows reconcile with the log
 //   • GET /api/matches/:id/reveal answers a seated player correctly and refuses everyone else
+//
+// With --store postgres, half the simulated humans are passkey accounts (created directly in the
+// database; the WebAuthn ceremony itself is covered by apps/web/e2e/accounts.mjs), at T1 or T2, some with
+// research consent; half of those report a client environment like the web client. Checks (Phase 5):
+//   • every human seat's trust_level_at_match is the account's level at match time, T0 for guests
+//   • guests are stored under a fresh pseudonym per match, never the id their client knows
+//   • integrity rows exist exactly for account seats and bot/agent seats; nothing at all for guests
+//   • an account seat with no client environment is flagged no_client_signals (the detector catches
+//     scripted clients) and its T2 player drops to T1; trust history matches
+//   • the training pool is empty (every match is flagged phase5)
+//   • no frame carries account data except the player's own welcome
 //
 // With --agents python, agent seats are played by the real Python agent service (services/agents), and:
 //   • every agent seat was played by baseline-1 (no fallback)
@@ -101,7 +125,7 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   const pending: Promise<unknown>[] = [];
   let seq = 0;
 
-  const launch = (url: string, token: string | null, queue: Mode | undefined) => {
+  const launch = (url: string, token: string | null, queue: Mode | undefined, env?: ClientEnv) => {
     const log: ClientLog = { frames: [], result: null };
     clients.push(log);
     const bot = new BotClient({
@@ -113,6 +137,7 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
       speed: o.speed,
       timeoutPct: o.timeoutPct,
       onFrame: (f) => log.frames.push(f),
+      env,
     });
     pending.push(bot.run().then((r) => (log.result = r)));
     return bot;
@@ -130,6 +155,7 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   const agentService = o.agents === 'python' ? await startAgentService() : null;
   const server = await startGameServer({
     clock,
+    accounts: sql ? { sql, ceremonies: NO_CEREMONIES } : undefined,
     store: pg ? tee(store, pg) : store,
     reveals,
     spawnBot: (args) => launch(args.url, args.token, undefined),
@@ -138,6 +164,7 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   });
 
   const started = performance.now();
+  const accounts = new Map<string, LoadAccount>();
   const humans: BotClient[] = [];
   const unseated = () => humans.filter((b) => b.seatedMatchId === null).length;
   while (server.stats().matchesStarted < o.matches) {
@@ -146,7 +173,11 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
       await sleep(10);
       continue;
     }
-    humans.push(launch(server.url, null, mode));
+    if (sql && humans.length % 2 === 0) {
+      const a = await makeAccount(sql, accounts.size);
+      accounts.set(a.playerId, a);
+      humans.push(launch(server.url, a.session, mode, a.env ? CLEAN_ENV : undefined));
+    } else humans.push(launch(server.url, null, mode));
     await sleep(2);
   }
   // Humans still waiting in the queue after the last match formed are released.
@@ -185,6 +216,7 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   if (sql) {
     for (const e of dbErrors) fail('db_write', e);
     for (const m of store.matches.values()) await auditDatabase(sql, m, fail);
+    await auditAccounts(sql, [...store.matches.values()], clients, accounts, fail);
     await sql.close();
   }
 
@@ -288,6 +320,7 @@ function tee(a: MatchStore, b: MatchStore): MatchStore {
     connection: (id, r) => (a.connection(id, r), b.connection(id, r)),
     rejection: (id, r) => (a.rejection(id, r), b.rejection(id, r)),
     annotation: (id, r) => (a.annotation(id, r), b.annotation(id, r)),
+    clientSignal: (id, r) => (a.clientSignal(id, r), b.clientSignal(id, r)),
     close: (id, st, at) => (a.close(id, st, at), b.close(id, st, at)),
     shutdown: async () => {
       await a.shutdown();
@@ -319,6 +352,7 @@ async function auditDatabase(
   same('connections', db.connections, m.connections);
   same('rejections', db.rejections, m.rejections);
   same('annotations', db.annotations, m.annotations);
+  same('client_signals', db.clientSignals, m.clientSignals);
   const state = replay(m.meta.config, m.meta.seed, m.inputs).state;
   same('reveal', await revealFromDb(sql, id), viewFor(state, 0).reveal);
   const [row] = await sql.query<{ n: number }>(
@@ -327,6 +361,149 @@ async function auditDatabase(
   );
   if (row?.n !== m.events.filter((e) => e.type === 'decision').length)
     fail('db_derived', `${id}: decision rows ≠ decision events`);
+}
+
+// ---------- Phase 5: accounts, trust, integrity ----------
+
+/** Accounts here are made in the database; no WebAuthn ceremony is ever run by the load test. */
+const NO_CEREMONIES: PasskeyCeremonies = {
+  registrationOptions: () => Promise.reject(new Error('not in load tests')),
+  verifyRegistration: async () => null,
+  authenticationOptions: () => Promise.reject(new Error('not in load tests')),
+  verifyAuthentication: async () => null,
+};
+const CLEAN_ENV: ClientEnv = {
+  webdriver: false,
+  headlessUserAgent: false,
+  noLanguages: false,
+  zeroOuterSize: false,
+};
+
+interface LoadAccount {
+  playerId: string;
+  session: string;
+  trust: TrustLevel;
+  env: boolean;
+}
+
+/** Account i: T1, T2, or T2 with research consent (cycling); half report a client environment. */
+async function makeAccount(sql: Sql, i: number): Promise<LoadAccount> {
+  const now = Date.now();
+  const playerId = await createAccount(sql, {
+    userHandle: randomBytes(32),
+    passkey: {
+      credentialId: randomBytes(16).toString('base64url'),
+      publicKey: randomBytes(65),
+      signCount: 0,
+      transports: [],
+      multiDevice: false,
+      backedUp: false,
+    },
+    termsVersion: 1,
+    now,
+  });
+  let trust: TrustLevel = 'T1';
+  if (i % 3 !== 0) trust = (await answerAge(sql, playerId, { year: 1990, month: 1, now })).trustLevel;
+  if (i % 3 === 2) await setConsent(sql, playerId, 'research', true, now);
+  return {
+    playerId,
+    session: await createSession(sql, playerId, now),
+    trust,
+    env: Math.floor(i / 3) % 2 === 0,
+  };
+}
+
+const accountChecks = { accounts: 0, accountSeats: 0, guestSeats: 0, flaggedSeats: 0, lowered: 0 };
+const lower = (t: TrustLevel): TrustLevel => (t === 'T3' ? 'T2' : t === 'T2' ? 'T1' : t);
+
+async function auditAccounts(
+  sql: Sql,
+  matches: StoredMatch[],
+  clients: ClientLog[],
+  accounts: Map<string, LoadAccount>,
+  fail: (check: string, detail: string) => void,
+): Promise<void> {
+  accountChecks.accounts += accounts.size;
+  const known = new Set<string>();
+  for (const c of clients) {
+    for (const f of c.frames) {
+      if (f.type === 'welcome') {
+        known.add(f.playerId);
+        if ((f.account !== null) !== accounts.has(f.playerId))
+          fail('welcome_account', `${f.playerId}: account ${f.account ? 'present' : 'missing'}`);
+      } else if (/trustLevel|ageConfirmed|researchConsent/.test(JSON.stringify(f)))
+        fail('account_leak', `${f.type} frame carries account data`);
+    }
+  }
+  const guestIds = new Set<string>();
+  const played = new Map<string, boolean>(); // account → flagged in its match
+  for (const m of matches) {
+    const id = m.meta.matchId;
+    const rows = await sql.query<{ seat_id: number; signal: string; flagged: boolean }>(
+      'select seat_id, signal, flagged from integrity_signals where match_id = $1',
+      [id],
+    );
+    const signals = await sql.query<{ seat_id: number }>(
+      'select distinct seat_id from client_signals where match_id = $1',
+      [id],
+    );
+    for (const o of m.meta.occupants) {
+      const seatRows = rows.filter((r) => r.seat_id === o.seat);
+      const expected = integrityApplies({
+        seat: o.seat,
+        kind: o.kind,
+        trustLevel: o.kind === 'human' ? (o.trustLevel ?? 'T0') : null,
+      });
+      if (expected !== seatRows.length > 0)
+        fail('integrity_rows', `${id} seat ${o.seat}: rows ${seatRows.length}`);
+      if (o.kind !== 'human') continue;
+      const account = accounts.get(o.playerId);
+      if (!account) {
+        accountChecks.guestSeats++;
+        if (o.trustLevel !== 'T0') fail('guest_trust', `${id} seat ${o.seat}: ${o.trustLevel}`);
+        if (known.has(o.playerId))
+          fail('guest_pseudonym', `${id} seat ${o.seat}: stored under its client's id`);
+        if (guestIds.has(o.playerId)) fail('guest_pseudonym', `${id}: guest id reused across matches`);
+        guestIds.add(o.playerId);
+        if (signals.some((x) => x.seat_id === o.seat)) fail('guest_signals', `${id} seat ${o.seat}`);
+        continue;
+      }
+      accountChecks.accountSeats++;
+      if (o.trustLevel !== account.trust)
+        fail('trust_at_match', `${id} seat ${o.seat}: ${o.trustLevel} vs ${account.trust}`);
+      const flag = (name: string) => seatRows.find((r) => r.signal === name)?.flagged;
+      if (flag('no_client_signals') !== !account.env)
+        fail(
+          'no_client_signals',
+          `${id} seat ${o.seat}: env ${account.env}, flagged ${flag('no_client_signals')}`,
+        );
+      if (account.env && flag('headless')) fail('headless', `${id} seat ${o.seat}: clean env flagged`);
+      const flagged = seatRows.some((r) => r.flagged);
+      if (flagged) accountChecks.flaggedSeats++;
+      played.set(o.playerId, flagged);
+    }
+  }
+  // Each account played at most one match (one bot each): its trust history must say exactly that.
+  for (const a of accounts.values()) {
+    const [p] = await sql.query<{ trust_level: TrustLevel }>(
+      'select trust_level from players where player_id = $1',
+      [a.playerId],
+    );
+    const flagged = played.get(a.playerId) ?? false;
+    const want = flagged ? lower(a.trust) : a.trust;
+    if (p?.trust_level !== want)
+      fail('trust_after_match', `${a.playerId}: ${p?.trust_level}, expected ${want}`);
+    const lowered = await sql.query<{ n: number }>(
+      `select count(*)::int as n from trust_changes where player_id = $1 and reason = 'automation_flag'`,
+      [a.playerId],
+    );
+    const wantLowered = flagged && want !== a.trust ? 1 : 0;
+    if (lowered[0]!.n !== wantLowered)
+      fail('trust_history', `${a.playerId}: ${lowered[0]!.n} automation_flag rows`);
+    accountChecks.lowered += lowered[0]!.n;
+  }
+  const pool = await sql.query<{ n: number }>('select count(*)::int as n from training_seats');
+  if (pool[0]!.n !== 0) fail('training_pool', `${pool[0]!.n} seats in the pool from dev (phase5) matches`);
 }
 
 /** Every seated human can reopen their reveal over HTTP; nobody else can. */
@@ -462,6 +639,12 @@ async function main(): Promise<number> {
           `${dbChecks.httpReveals} HTTP reveals checked, ${dbChecks.httpRefusals} unauthorized requests refused`,
       );
       dbChecks.matches = dbChecks.httpReveals = dbChecks.httpRefusals = 0;
+      const a = accountChecks;
+      console.log(
+        `  accounts: ${a.accounts} made; ${a.accountSeats} account seats (${a.flaggedSeats} flagged, ${a.lowered} lowered a level), ` +
+          `${a.guestSeats} guest seats under per-match pseudonyms; training pool empty`,
+      );
+      a.accounts = a.accountSeats = a.guestSeats = a.flaggedSeats = a.lowered = 0;
     }
     if (o.agents === 'python') {
       console.log(

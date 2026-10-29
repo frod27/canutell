@@ -1,5 +1,6 @@
 export {
   startGameServer,
+  BUILD_PHASE_FLAG,
   SCRIPTED_AGENT_VERSION,
   type GameServer,
   type GameServerOptions,
@@ -23,3 +24,4 @@ export {
   type AgentSeater,
   type AgentSeat,
 } from './agent-service';
+export { AccountsApi, simpleWebAuthn, type PasskeyCeremonies, type WebAuthnConfig } from './accounts-api';

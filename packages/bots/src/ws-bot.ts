@@ -4,6 +4,7 @@ import {
   PHASE_DURATION_MS,
   ServerMessageSchema,
   promptKey,
+  type ClientEnv,
   type ClientMessage,
   type Mode,
   type ServerMessage,
@@ -32,6 +33,8 @@ export interface BotClientOptions {
   timeoutPct?: number;
   /** Every frame received, for audits. */
   onFrame?: (msg: ServerMessage) => void;
+  /** Report this environment after the welcome, as the web client does (integrity signals, load tests). */
+  env?: ClientEnv;
 }
 
 export interface BotResult {
@@ -122,6 +125,7 @@ export class BotClient {
   private onMessage(msg: ServerMessage): void {
     switch (msg.type) {
       case 'welcome':
+        if (this.o.env) this.send({ type: 'client.env', env: this.o.env });
         if (this.o.queue && !msg.resumedMatchId) this.send({ type: 'queue.join', mode: this.o.queue });
         break;
       case 'match.found':

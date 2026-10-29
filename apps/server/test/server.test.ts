@@ -11,6 +11,7 @@ import {
   type ServerMessage,
 } from '@canutell/protocol';
 import {
+  BUILD_PHASE_FLAG,
   JsonlStore,
   ManualClock,
   MemoryStore,
@@ -320,12 +321,13 @@ describe('GET /api/matches/:id/reveal', () => {
     const get = (path: string, token?: string) =>
       fetch(`${http}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
 
-    const ok = await get('/api/matches/m-ok/reveal', me.token);
-    expect(ok.status).toBe(200);
-    expect(ok.headers.get('access-control-allow-origin')).toBe('*');
-    expect(ok.headers.get('cache-control')).toBe('no-store');
-    expect(await ok.json()).toEqual(fakeReveal('m-ok'));
-    expect(asked).toEqual([['m-ok', me.playerId]]);
+    // A guest is asked about only by the pseudonym of a match it played (DECISIONS "Guests and deleted
+    // accounts"); this guest played none. The 200 path for accounts is in accounts.test.ts.
+    const no = await get('/api/matches/m-ok/reveal', me.token);
+    expect(no.status).toBe(404);
+    expect(no.headers.get('access-control-allow-origin')).toBe('*');
+    expect(no.headers.get('cache-control')).toBe('no-store');
+    expect(asked).toEqual([]);
 
     expect((await get('/api/matches/m-other/reveal', me.token)).status).toBe(404);
     expect((await get('/api/matches/m-ok/reveal')).status).toBe(401);
@@ -333,7 +335,7 @@ describe('GET /api/matches/:id/reveal', () => {
     expect((await get('/api/matches/../etc/reveal', me.token)).status).toBe(404);
     const pre = await fetch(`${http}/api/matches/m-ok/reveal`, { method: 'OPTIONS' });
     expect(pre.status).toBe(204);
-    expect(pre.headers.get('access-control-allow-headers')).toBe('authorization');
+    expect(pre.headers.get('access-control-allow-headers')).toBe('authorization, content-type');
   });
 
   it('answers 501 when the server has no database', async () => {
@@ -380,7 +382,7 @@ describe('agent seating (Phase 4)', () => {
         .sort(),
     ).toEqual(['baseline-1', 'scripted-0']);
     expect(meta.flags).toEqual([
-      'phase4',
+      BUILD_PHASE_FLAG,
       'scripted_agents',
       'baseline_agents',
       'agent_fallback',

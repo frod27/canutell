@@ -12,14 +12,16 @@
   },
   "dependencies": {
     "@canutell/bots": "workspace:*",
+    "@canutell/db": "workspace:*",
     "@canutell/engine": "workspace:*",
     "@canutell/protocol": "workspace:*",
+    "@simplewebauthn/server": "14.0.3",
     "ws": "^8.22.0",
-    "@canutell/db": "workspace:*",
     "zod": "^4.1.0"
   },
   "devDependencies": {
     "@canutell/sim": "workspace:*",
+    "@electric-sql/pglite": "0.5.13",
     "@types/ws": "^8.18.2"
   }
 }

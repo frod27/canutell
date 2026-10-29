@@ -7,6 +7,7 @@ import {
   type RevealSource,
   type Sql,
 } from '@canutell/db';
+import { simpleWebAuthn } from './accounts-api';
 import { agentServiceSeater } from './agent-service';
 import { ScaledClock } from './clock';
 import { startGameServer } from './server';
@@ -23,6 +24,8 @@ import { JsonlStore, type MatchStore } from './store';
 //   CORS_ORIGIN    allowed origin for the HTTP API (default *)
 //   AGENT_SERVICE_URL / AGENT_SERVICE_SECRET
 //                  the Python agent service (services/agents). Without it, agent seats get scripted bots.
+//   WEBAUTHN_RP_ID   passkey relying-party ID: the web client's domain (default localhost). Needs DATABASE_URL.
+//   WEBAUTHN_ORIGINS comma-separated web origins allowed to sign in (default http://localhost:3000)
 
 const env = process.env;
 const speed = Number(env.CLOCK_SPEED ?? 1);
@@ -72,7 +75,24 @@ log(
     : 'agent seats → scripted bots (no AGENT_SERVICE_URL)',
 );
 
+// Passkey accounts (Phase 5) need the database; without it everyone plays as a guest.
+const accounts = sql
+  ? {
+      sql,
+      ceremonies: simpleWebAuthn({
+        rpId: env.WEBAUTHN_RP_ID ?? 'localhost',
+        origins: (env.WEBAUTHN_ORIGINS ?? 'http://localhost:3000').split(',').map((x) => x.trim()),
+      }),
+    }
+  : undefined;
+log(
+  accounts
+    ? `passkey accounts on (rp ${env.WEBAUTHN_RP_ID ?? 'localhost'})`
+    : 'accounts off (no DATABASE_URL)',
+);
+
 const server = await startGameServer({
+  accounts,
   agentSeater,
   clock,
   store,

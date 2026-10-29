@@ -3,16 +3,20 @@ import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { BotClient, POLICY_NAMES } from '@canutell/bots';
-import type { RevealSource } from '@canutell/db';
+import { trustLevels, type RevealSource, type Sql, type StoredClientEnv } from '@canutell/db';
+import { AccountsApi, type PasskeyCeremonies } from './accounts-api';
 import type { AgentSeater } from './agent-service';
 import {
   AI_DISCLOSURE,
   ClientMessageSchema,
   SEAT_COUNT,
+  SESSION_TOKEN_PATTERN,
+  type AccountSummary,
   type ClientMessage,
   type MatchConfig,
   type SeatId,
   type ServerMessage,
+  type TrustLevel,
 } from '@canutell/protocol';
 import type { Clock } from './clock';
 import { MatchRunner, type SeatLink } from './match-runner';
@@ -20,11 +24,13 @@ import { Matchmaker, type MatchRequest, type Party, type Random } from './matchm
 import type { MatchFlag, MatchMeta, MatchStore, SeatOccupant } from './store';
 
 /**
- * Every match carries the build phase it was played in. Until Phase 5 (accounts, consent) all players are
- * guests, so these matches are dev data: never research-eligible, purged before the closed alpha
- * (DECISIONS "Guest data before accounts").
+ * Every match carries the build phase it was played in. Until the closed alpha these matches are dev data:
+ * never research-eligible, purged before the alpha (DECISIONS "Guest data before accounts").
  */
-export const BUILD_PHASE_FLAG = 'phase4' as const;
+export const BUILD_PHASE_FLAG = 'phase5' as const;
+
+/** Client signals stored per seat per match, at most (a flood of focus/blur frames is not more evidence). */
+const MAX_SIGNALS_PER_MATCH = 500;
 
 /** Version label for scripted bots in agent seats until Phase 4 agents exist. */
 export const SCRIPTED_AGENT_VERSION = 'scripted-0';
@@ -55,6 +61,11 @@ export interface GameServerOptions {
   /** Allowed origin for the HTTP API (CORS). Bearer tokens, no cookies, so `*` is the default. */
   corsOrigin?: string;
   /**
+   * Passkey accounts (Phase 5). Needs the database. Without it everyone plays as a guest, /api/auth and
+   * /api/me answer 501, and session tokens are refused.
+   */
+  accounts?: { sql: Sql; ceremonies: PasskeyCeremonies; now?: () => number };
+  /**
    * Seats agents from the agent service (services/agents). Without it — or when it fails for a seat — that
    * seat gets a scripted bot (`scripted-0`), and a failure is flagged `agent_fallback`.
    */
@@ -69,11 +80,20 @@ export interface GameServerOptions {
 
 interface Player {
   playerId: string;
+  /** Guest or bot token. Account players are found by session (always re-checked in the database). */
   token: string;
   kind: 'human' | 'agent' | 'filler';
+  /** Signed in with a passkey account; `playerId` is the account's id. */
+  account: boolean;
   socket: WebSocket | null;
   matchId: string | null;
   seat: SeatId | null;
+  /** The last environment report from the current connection (integrity signals, account holders only). */
+  env: StoredClientEnv | null;
+  /** The id each match stored this player under: a guest gets a fresh pseudonym per match. */
+  storedIds: Map<string, string>;
+  /** Client signals stored for the current match. */
+  signals: number;
 }
 
 export interface GameServer {
@@ -98,6 +118,19 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
   const players = new Map<string, Player>(); // by token
   const byId = new Map<string, Player>();
   const runners = new Map<string, MatchRunner>();
+  const rosters = new Map<string, Player[]>(); // by match id
+  const accounts = o.accounts
+    ? new AccountsApi({
+        sql: o.accounts.sql,
+        ceremonies: o.accounts.ceremonies,
+        now: o.accounts.now,
+        log,
+        onSessionsRevoked: (playerId) => {
+          const p = byId.get(playerId);
+          if (p?.account) p.socket?.close(4001, 'signed out');
+        },
+      })
+    : null;
   let matchesStarted = 0;
   let invalidFrames = 0;
   let url = '';
@@ -115,9 +148,13 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       playerId: `${kind === 'human' ? 'p' : 'b'}_${randomUUID()}`,
       token: randomBytes(24).toString('hex'),
       kind,
+      account: false,
       socket: null,
       matchId: null,
       seat: null,
+      env: null,
+      storedIds: new Map(),
+      signals: 0,
     };
     players.set(p.token, p);
     byId.set(p.playerId, p);
@@ -195,7 +232,24 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         agentVersion: p.kind === 'agent' ? agentVersion.get(p)! : null,
       })),
     };
-    const occupants: SeatOccupant[] = roster.map((p, seat) => ({ seat, kind: p.kind, playerId: p.playerId }));
+    // Trust at match time (SPEC §Integrity), read fresh from the database: a flag may have lowered it since
+    // sign-in. If the read fails, the seat is stored as T0, which can only keep data out of the pool.
+    const accountIds = roster.filter((p) => p.account).map((p) => p.playerId);
+    let trust = new Map<string, TrustLevel>();
+    if (accountIds.length > 0 && o.accounts)
+      trust = await trustLevels(o.accounts.sql, accountIds).catch((e) => {
+        log(`match ${matchId}: trust lookup failed, seating accounts as T0: ${String(e)}`);
+        return new Map<string, TrustLevel>();
+      });
+    // A guest is stored under a pseudonym that is new for this match, so nothing links a guest's matches
+    // (DECISIONS "Guests and deleted accounts").
+    const occupants: SeatOccupant[] = roster.map((p, seat) => {
+      const stored = p.kind === 'human' && !p.account ? `p_${randomUUID()}` : p.playerId;
+      p.storedIds.set(matchId, stored);
+      return p.kind === 'human'
+        ? { seat, kind: p.kind, playerId: stored, trustLevel: (p.account && trust.get(p.playerId)) || 'T0' }
+        : { seat, kind: p.kind, playerId: stored };
+    });
     const flags: MatchFlag[] = [BUILD_PHASE_FLAG];
     if (scripted.length > 0) flags.push('scripted_agents');
     if ([...agentVersion.values()].some((v) => v !== SCRIPTED_AGENT_VERSION)) flags.push('baseline_agents');
@@ -217,10 +271,12 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
     };
     const runner = new MatchRunner(meta, { clock, store: o.store, onEnd, log });
     runners.set(matchId, runner);
+    rosters.set(matchId, roster);
     matchesStarted++;
     roster.forEach((p, seat) => {
       p.matchId = matchId;
       p.seat = seat;
+      p.signals = 0;
     });
     runner.start();
     // Everyone already connected (humans, and agents that answered the seat request quickly) is told now;
@@ -228,17 +284,36 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
     for (const p of roster) {
       if (!p.socket) continue;
       send(p, { type: 'match.found', matchId, seat: p.seat!, mode: req.mode, disclosure: AI_DISCLOSURE });
-      runner.attach(p.seat!, link(p));
+      attach(p, runner);
     }
     for (const b of [...scripted, ...bots.filter((x) => x.kind === 'filler')])
       spawnBot({ url, token: b.token, kind: b.kind as 'agent' | 'filler', speed: clock.speed });
   };
 
+  /** Integrity signals (SPEC §Integrity): stored only for account holders' seats, never for guests. */
+  const signal = (p: Player, kind: 'env' | 'focus' | 'blur') => {
+    if (!p.account || p.seat === null || !p.matchId || !runners.has(p.matchId)) return;
+    if (kind === 'env' && !p.env) return;
+    if (p.signals >= MAX_SIGNALS_PER_MATCH) return;
+    p.signals++;
+    o.store.clientSignal(p.matchId, {
+      seat: p.seat,
+      at: clock.now(),
+      kind,
+      value: kind === 'env' ? p.env : null,
+    });
+  };
+  const attach = (p: Player, runner: MatchRunner) => {
+    runner.attach(p.seat!, link(p));
+    signal(p, 'env');
+  };
+
   const onEnd = (runner: MatchRunner, status: 'completed' | 'aborted') => {
     runners.delete(runner.matchId);
-    for (const occ of runner.meta.occupants) {
-      const p = byId.get(occ.playerId);
-      if (!p || p.matchId !== runner.matchId) continue;
+    const roster = rosters.get(runner.matchId) ?? [];
+    rosters.delete(runner.matchId);
+    for (const p of roster) {
+      if (p.matchId !== runner.matchId) continue;
       p.matchId = null;
       p.seat = null;
       if (p.kind !== 'human') {
@@ -283,8 +358,8 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
 
   const cors = {
     'access-control-allow-origin': o.corsOrigin ?? '*',
-    'access-control-allow-headers': 'authorization',
-    'access-control-allow-methods': 'GET, OPTIONS',
+    'access-control-allow-headers': 'authorization, content-type',
+    'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
   };
   const reply = (res: ServerResponse, status: number, body?: unknown) => {
     res.writeHead(status, { ...cors, 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -297,29 +372,44 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       return;
     }
     if (path === '/health') return reply(res, 200, { ok: true, matches: runners.size });
+    if (accounts?.handle(req, res, path, (status, body) => reply(res, status, body))) return;
+    if (path.startsWith('/api/auth/') || path === '/api/me' || path.startsWith('/api/me/'))
+      return reply(res, 501, { error: 'accounts need the database' });
     const m = /^\/api\/matches\/([A-Za-z0-9-]{1,128})\/reveal$/.exec(path);
     if (m && req.method === 'GET') {
-      // Only a player who held a seat in the match gets an answer; everyone else gets 404.
-      const token = /^Bearer ([0-9a-f]{48})$/.exec(req.headers.authorization ?? '')?.[1];
+      // Only a player who held a seat in the match gets an answer; everyone else gets 404. An account sees
+      // its reveals from any device; a guest only from the device (token) that played, until a restart.
+      const token = /^Bearer ([0-9a-f]{48}|s_[0-9a-f]{64})$/.exec(req.headers.authorization ?? '')?.[1];
       if (!token) return reply(res, 401, { error: 'missing bearer token' });
-      const player = players.get(token);
       if (!o.reveals) return reply(res, 501, { error: 'reveals need the postgres store' });
-      if (!player || player.kind !== 'human') return reply(res, 404, { error: 'not found' });
-      o.reveals.reveal(m[1]!, player.playerId).then(
-        (r) => (r ? reply(res, 200, r) : reply(res, 404, { error: 'not found' })),
-        (e) => {
-          log(`reveal ${m[1]} failed: ${String(e)}`);
-          reply(res, 500, { error: 'internal error' });
-        },
-      );
+      const reveals = o.reveals;
+      const matchId = m[1]!;
+      const whom = async (): Promise<string | null> => {
+        if (SESSION_TOKEN_PATTERN.test(token)) return (await accounts?.resolve(token))?.playerId ?? null;
+        const player = players.get(token);
+        if (!player || player.kind !== 'human' || player.account) return null;
+        return player.storedIds.get(matchId) ?? null;
+      };
+      whom()
+        .then((id) => (id ? reveals.reveal(matchId, id) : null))
+        .then(
+          (r) => (r ? reply(res, 200, r) : reply(res, 404, { error: 'not found' })),
+          (e) => {
+            log(`reveal ${matchId} failed: ${String(e)}`);
+            reply(res, 500, { error: 'internal error' });
+          },
+        );
       return;
     }
     reply(res, 404, { error: 'not found' });
   });
   const wss = new WebSocketServer({ server: http, maxPayload: MAX_PAYLOAD });
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
     let player: Player | null = null;
+    // Reduced to a boolean at once; the user-agent string is never kept (SPEC §Integrity).
+    const serverHeadlessUa = /HeadlessChrome/i.test(req.headers['user-agent'] ?? '');
+    let queue: Promise<void> = Promise.resolve();
     let tokens = RATE_CAPACITY;
     let last = performance.now();
     let invalid = 0;
@@ -344,12 +434,23 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         return error('invalid_message', (e as Error).message);
       }
 
-      if (msg.type === 'hello') {
-        player = hello(ws, msg.token, player);
-        return;
-      }
-      if (!player) return error('hello_first', 'send hello first');
-      handle(player, msg, error);
+      // Frames are handled in order; only `hello` with a session token waits (on the database).
+      queue = queue
+        .then(async () => {
+          if (msg.type === 'hello') {
+            player = await hello(ws, msg.token, player);
+            return;
+          }
+          if (!player) return error('hello_first', 'send hello first');
+          if (msg.type === 'client.env') {
+            player.env = { ...msg.env, serverHeadlessUa };
+            signal(player, 'env');
+            return;
+          }
+          if (msg.type === 'focus' || msg.type === 'blur') return signal(player, msg.type);
+          handle(player, msg, error);
+        })
+        .catch((e) => log(`frame handling failed: ${String(e)}`));
     });
 
     ws.on('close', () => {
@@ -361,8 +462,40 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
     });
   });
 
-  const hello = (ws: WebSocket, token: string | null, current: Player | null): Player => {
-    let p = token ? players.get(token) : undefined;
+  const hello = async (ws: WebSocket, token: string | null, current: Player | null): Promise<Player> => {
+    let p: Player | undefined;
+    let account: AccountSummary | null = null;
+    if (token && SESSION_TOKEN_PATTERN.test(token)) {
+      // A session is re-checked on every hello, so signing out or deleting the account takes effect at once.
+      account = accounts ? await accounts.resolve(token).catch(() => null) : null;
+      if (!account) {
+        if (ws.readyState === WebSocket.OPEN)
+          ws.send(
+            JSON.stringify({
+              type: 'error',
+              code: 'session_invalid',
+              message: 'signed out; playing as a guest',
+            }),
+          );
+      } else {
+        p = byId.get(account.playerId);
+        if (!p) {
+          p = {
+            playerId: account.playerId,
+            token: '',
+            kind: 'human',
+            account: true,
+            socket: null,
+            matchId: null,
+            seat: null,
+            env: null,
+            storedIds: new Map(),
+            signals: 0,
+          };
+          byId.set(p.playerId, p);
+        }
+      }
+    } else if (token) p = players.get(token);
     if (current && p !== current) {
       // A second hello on one socket switches identity; detach the old one cleanly.
       current.socket = null;
@@ -370,14 +503,16 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
     }
     if (!p) p = newPlayer('human');
     if (p.socket && p.socket !== ws) p.socket.close(4000, 'replaced by a new connection');
+    if (p.socket !== ws) p.env = null; // a new connection reports its own environment
     p.socket = ws;
     const runner = p.matchId ? runners.get(p.matchId) : undefined;
     send(p, {
       type: 'welcome',
       playerId: p.playerId,
-      token: p.token,
+      token: account ? token! : p.token,
       serverTime: clock.now(),
       resumedMatchId: runner ? runner.matchId : null,
+      account,
     });
     if (runner && p.seat !== null) {
       send(p, {
@@ -387,7 +522,7 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         mode: runner.meta.mode,
         disclosure: AI_DISCLOSURE,
       });
-      runner.attach(p.seat, link(p));
+      attach(p, runner);
     }
     return p;
   };
