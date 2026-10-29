@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
 import { AI_DISCLOSURE, type Mode } from '@canutell/protocol';
 import type { useGame } from '@/lib/useGame';
@@ -49,12 +50,30 @@ export function Lobby({ game }: { game: Game }) {
     );
   }
 
+  // Only the player's own account status is ever shown; seats never show anyone's (CLAUDE.md invariant 7).
+  const accountBar = state.account ? (
+    <p className="account-bar">
+      <span>
+        Signed in · <strong>{state.account.trustLevel}</strong>
+      </span>
+      <Link href="/account">Account</Link>
+    </p>
+  ) : (
+    <p className="account-bar">
+      <span className="muted">Playing as a guest.</span>
+      <Link href="/signup">Create account</Link>
+      <span className="muted">·</span>
+      <Link href="/signin">Sign in</Link>
+    </p>
+  );
+
   const modes: { mode: Mode; label: string; detail: string }[] = [
     { mode: 'quick', label: 'Quick', detail: '3 rounds · about 7 min' },
     { mode: 'full', label: 'Full', detail: '5 rounds · about 11½ min' },
   ];
   return (
     <section className="card">
+      {accountBar}
       <h2>Play</h2>
       <p className="disclosure">{AI_DISCLOSURE}</p>
       <div className="stack">

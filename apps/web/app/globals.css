@@ -121,6 +121,36 @@ button.secondary {
   color: var(--text);
   border: 1px solid var(--border);
 }
+a.button {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  padding: 10px 14px;
+  text-decoration: none;
+}
+a.button.secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+button.danger {
+  background: #b3261e;
+}
+button.small {
+  padding: 4px 10px;
+  margin-left: 8px;
+}
+.consent p {
+  margin: 0.5rem 0;
+}
+.account-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
 button:disabled {
   opacity: 0.5;
   cursor: default;

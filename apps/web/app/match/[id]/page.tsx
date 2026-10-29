@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { MatchRevealResponseSchema, type MatchRevealResponse } from '@canutell/protocol';
 import { Reveal } from '@/components/Reveal';
+import { readSession } from '@/lib/account';
 import { readToken, serverHttpUrl } from '@/lib/useGame';
 
 type Load =
@@ -16,11 +17,13 @@ export default function MatchRevealPage() {
   const [load, setLoad] = useState<Load>({ state: 'loading' });
 
   useEffect(() => {
-    const token = readToken();
+    // Signed in: any device. As a guest: only the device that played, until the server restarts.
+    const token = readSession() ?? readToken();
     if (!token) {
       setLoad({
         state: 'error',
-        message: 'This reveal is only visible to players from that match, on the device they played on.',
+        message:
+          'This reveal is only visible to players from that match: signed in, or as a guest on the device they played on.',
       });
       return;
     }
@@ -30,7 +33,7 @@ export default function MatchRevealPage() {
       .then(async (res) => {
         if (res.status === 404 || res.status === 401)
           throw new Error(
-            'Reveal not found. It is only visible to players from that match, on the device they played on.',
+            'Reveal not found. It is only visible to players from that match: signed in, or as a guest on the device they played on.',
           );
         if (res.status === 501)
           throw new Error('This server is not storing matches in a database, so reveals cannot be reopened.');
