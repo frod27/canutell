@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AccountSummarySchema, ClientEnvSchema } from './accounts';
 import { ActionSchema } from './actions';
 import { ModeSchema, PhaseSchema, SeatIdSchema, ServerTimeSchema } from './common';
 import { RevealViewSchema, SeatViewSchema } from './views';
@@ -22,8 +23,15 @@ export const AI_DISCLOSURE = 'This match may contain AI players.';
 // ---------- client → server ----------
 
 export const ClientMessageSchema = z.discriminatedUnion('type', [
-  /** First frame on every connection. A token resumes an existing guest identity (and seat). */
+  /**
+   * First frame on every connection. `token` is a guest token (resumes that guest and seat) or an account
+   * session token (`s_…`, from passkey sign-in). null starts a new guest.
+   */
   z.object({ type: z.literal('hello'), token: z.string().min(16).max(128).nullable() }),
+  /** Integrity signals (SPEC §Integrity), web client only. Stored only for account holders' seats. */
+  z.object({ type: z.literal('client.env'), env: ClientEnvSchema }),
+  z.object({ type: z.literal('focus') }),
+  z.object({ type: z.literal('blur') }),
   z.object({ type: z.literal('queue.join'), mode: ModeSchema }),
   z.object({ type: z.literal('queue.leave') }),
   z.object({ type: z.literal('party.create'), mode: ModeSchema }),
@@ -64,6 +72,8 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
     serverTime: ServerTimeSchema,
     /** Present when the token resumed a seat in a running match. */
     resumedMatchId: z.string().nullable(),
+    /** The player's own account when signed in with a session token; null for guests and bots. */
+    account: AccountSummarySchema.nullable(),
   }),
   /** Deliberately count-free (see header). */
   z.object({

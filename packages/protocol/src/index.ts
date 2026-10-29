@@ -4,5 +4,7 @@ export * from './config';
 export * from './actions';
 export * from './events';
 export * from './views';
+export * from './accounts';
+export * from './consent';
 export * from './messages';
 export * from './json-schema';

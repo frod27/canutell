@@ -29,6 +29,58 @@
       "properties": {
         "type": {
           "type": "string",
+          "const": "client.env"
+        },
+        "env": {
+          "type": "object",
+          "properties": {
+            "webdriver": {
+              "type": "boolean"
+            },
+            "headlessUserAgent": {
+              "type": "boolean"
+            },
+            "noLanguages": {
+              "type": "boolean"
+            },
+            "zeroOuterSize": {
+              "type": "boolean"
+            }
+          },
+          "required": ["webdriver", "headlessUserAgent", "noLanguages", "zeroOuterSize"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["type", "env"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "focus"
+        }
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "blur"
+        }
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
           "const": "queue.join"
         },
         "mode": {

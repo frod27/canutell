@@ -24,12 +24,14 @@
     "db:derive": "tsx packages/db/src/cli.ts derive",
     "db:purge": "tsx packages/db/src/cli.ts purge",
     "protocol:schema": "tsx packages/protocol/scripts/export-schema.ts",
+    "consent:docs": "tsx packages/protocol/scripts/export-consent.ts",
     "db:latency-model": "tsx packages/db/src/cli.ts latency-model",
     "protocol:fixtures": "tsx sim/src/fixtures.ts",
     "agents:serve": "cd services/agents && uv run python -m canutell_agents",
     "agents:test": "cd services/agents && uv run pytest -q",
     "agents:lint": "cd services/agents && uv run ruff format --check . && uv run ruff check . && uv run pyright",
-    "db:humanlikeness": "tsx packages/db/src/cli.ts humanlikeness"
+    "db:humanlikeness": "tsx packages/db/src/cli.ts humanlikeness",
+    "db:integrity": "tsx packages/db/src/cli.ts integrity"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
