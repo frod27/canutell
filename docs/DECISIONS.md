@@ -727,6 +727,131 @@ questions:
 
 ---
 
+## 2026-10-29 — Phase 6 (closed alpha)
+
+### Phase 6 plan and migration 0004 [user]
+
+- **Question.** The plan and migration 0004 in `docs/proposals/phase-6.md`, plus four open questions.
+- **Decision.** The owner approved the plan and migration as written, with every recommendation:
+  1. **Hosting:** host-agnostic Docker images plus Fly.io configs for the game server and the agent
+     service. The web goes on Vercel and the database on a Supabase project.
+  2. **Thin queues:** scheduled game nights. The 0–2 agent rule is unchanged, so H stays comparable, and
+     no queue counts are ever shown.
+  3. **Access:** invite-only accounts and no guests during the alpha (`ACCOUNTS_ONLY`, `INVITES_REQUIRED`).
+  4. **Invite tracking:** each account records the invite it used, in the locked identity schema, so
+     analysis can find friend groups that bias detection.
+- **Reason.** Every alpha seat is then an account, so the whole table can enter the training pool. Game
+  nights fill matches without touching the rules the data depends on.
+
+### Closed-alpha switches [engine]
+
+- **Server settings:**
+  - `ACCOUNTS_ONLY`: a `hello` without a valid session gets `account_required` and no welcome.
+  - `INVITES_REQUIRED`: sign-up needs a usable invite.
+  - `ALPHA`: matches get the `alpha` cohort flag and no build-phase flag.
+  - `GAME_NIGHTS`: the schedule.
+- **Bots and agents are unaffected:** their tokens are issued by the server.
+- **The refusal is byte-identical** whatever the queue holds (tested). It carries nothing about who is
+  waiting.
+- **The server refuses `ALPHA` together with `FILL_BOTS_MS`,** so dev bot fill can't leak into alpha
+  data.
+
+### Invites [engine]
+
+- **The code.** Twelve characters from an alphabet without 0/O, 1/I/L or U, shown once and stored as
+  SHA-256. Typing is forgiving: case, spaces and dashes are ignored.
+- **When it's checked.** Before the passkey ceremony, so a wrong code wastes no passkey. One use is
+  consumed atomically in the account-creation transaction; concurrent sign-ups never exceed `max_uses`
+  (tested on Postgres).
+- **What's recorded.** Each account keeps its `invite_id` in the identity schema. The ops report counts
+  matches in which 2+ players share an invite (friend groups bias detection), as an aggregate only.
+
+### Post-match survey [engine]
+
+- **Questions:** fun 1–5, optional tags, and an optional comment of up to 500 characters, masked like
+  chat.
+- **Rules:**
+  - once per seat, signed-in seats only, after the match is completed;
+  - the client retries once if it answers before the completed match is saved;
+  - rows are append-only and deleted with the account;
+  - `canutell_export` cannot read them.
+
+### Game nights [engine]
+
+- **The rule format:** `Tue,Thu,Sun 20:00-22:00 Europe/Madrid`, several separated by `;`. It is
+  daylight-saving aware, and a window that ends after midnight works.
+- **Same for everyone.** Every welcome carries the next windows. Visitors refused a welcome get the same
+  data from the public `GET /api/game-nights`.
+- **The 3-minute hint** is a fixed client timer on the player's own wait, never a count.
+
+### Queue waits live in the logs [engine, differs from the proposal]
+
+- **The proposal** listed the median queue-to-match time in `ops:report`. Queue waits are not in the
+  database, and adding them would need a schema change.
+- **Instead,** the server logs min, median and max waits per formed match, and the report points
+  there.
+- **Later:** store them if the alpha shows they matter.
+
+### Deployment [engine, partly unverified]
+
+- **Bundle.** esbuild produces `dist/server.mjs` and `dist/db-cli.mjs`, with the migrations copied next
+  to them (`CANUTELL_MIGRATIONS_DIR`). It runs without `node_modules`.
+- **Images.**
+  - `apps/server/Dockerfile` (337 MB) and `services/agents/Dockerfile` (390 MB) both built here.
+  - Run together, they played a full match with `baseline-1` seated by the agent container.
+  - In this sandbox, the build needed its proxy's CA added through a derived Dockerfile; the committed
+    Dockerfiles carry no sandbox settings.
+- **Agent callback URL (bug found).** The server used to tell the agent service its own bind address.
+  That only works on one host. `AGENT_CALLBACK_URL` now sets the address agents connect back to, e.g.
+  `ws://canutell-server.internal:8787` on Fly's private network.
+- **Not verified here:**
+  - `fly.server.toml` and `fly.agents.toml` are written from Fly's documented format but untested
+    against `flyctl`, which needs an account.
+  - `.github/workflows/ci.yml` runs only on GitHub.
+- **One machine.** Matches live in memory, so the server runs as exactly one machine with auto-stop off.
+  Deploy outside game nights.
+
+### Operator deletion [engine]
+
+- `pnpm db:delete-account --match ID --seat N --yes` runs the same deletion as `/account`.
+- The operator identifies the account by match and seat, never by player id.
+
+### Phase 6 acceptance results
+
+- **Load test:** `pnpm loadtest --matches 200 --mode both --store postgres --agents python --alpha` (local
+  Postgres 16, the Python agent service in every agent seat, accounts-only with invites) passed with 0
+  violations over 400 matches:
+  - full mode: 26,657 decisions over 1,001 account seats; the training pool held exactly the 167
+    eligible seats;
+  - quick mode: 16,586 decisions over 984 account seats; exactly the 163 eligible seats.
+- **Audited per match,** on top of the Phase 3–5 checks:
+  - a guest is refused with `account_required` and never welcomed;
+  - every human seat is an account;
+  - every match is flagged `alpha` and has no build-phase flag;
+  - the training pool equals an independent computation (T2 at match time, research consent, no
+    automation flag), with no seat missing and none extra;
+  - the ops report shows no player id.
+- **How the pool check works.** Load tests run on a sped-up clock, which alone excludes every match.
+  For the comparison, `sped_up` is lifted in that throwaway database only, then put back.
+- **Fixed during acceptance:** the shared-invite count in the load-test summary counted friend groups
+  instead of matches, and its time window mixed modes on the sped-up clock. It is now counted per match
+  id.
+- **Browser e2e** (`apps/web/e2e/accounts.mjs`, closed-alpha mode, real passkeys): 24 of 24 checks pass.
+  - A signed-out visitor sees "Closed alpha" with the next game night.
+  - A wrong invite is refused before any passkey is made; a right one (typed in lower case) works and is
+    recorded.
+  - The match, survey (comment masked), flag, review, second device, consent off and deletion all pass;
+    deletion removes the survey answer.
+- **Deployment:**
+  - both Docker images built, and ran together for a full match with `baseline-1` seated through
+    `AGENT_CALLBACK_URL`;
+  - the server bundle ran without `node_modules`.
+  - Fly configs and CI were not run (see "Deployment").
+- **Suite:** 275 TypeScript tests pass on both PGlite and Postgres 16. The simulator ran 10,000 matches
+  per mode with 0 invariant violations. 68 Python tests pass; ruff and pyright are clean.
+
+---
+
 ## Later
 
 Noted while building Phase 1; out of scope for this phase.
@@ -773,3 +898,9 @@ Noted while building Phase 1; out of scope for this phase.
 - **A reviewer UI** for flagged seats (today: `pnpm db:integrity`).
 - **Tuning integrity thresholds** against labelled alpha data, and measuring false positives.
 - **Re-asking age** when an under-18 account has since turned 18 (a support process; the app can't verify).
+- **Game-night reminders** (web push or email digests). Today the reminder is posted by hand.
+- **More than one server machine.** It needs sticky routing by match, and persisted sessions to resume
+  matches across restarts.
+- **Error alerting** on `DB WRITE FAILED` and on aborted matches, beyond `fly logs`.
+- **An ops dashboard page,** if `pnpm ops:report` proves too slow to read weekly.
+- **Storing queue waits,** if the alpha shows they matter (they are in the logs today).

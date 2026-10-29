@@ -1,7 +1,8 @@
 # Phase 6 proposal: closed alpha (30–50 players)
 
-Status: **draft for approval.** Nothing is built yet. This needs approval of the plan, of migration 0004,
-and answers to the open questions at the end.
+Status: **approved 2026-10-29.** Owner answers: the recommendation for every open question (Docker plus
+Fly.io, game nights, invite-only with no guests) and the plan and migration as written. Implementation notes
+are in DECISIONS.md under Phase 6.
 
 ## Goal
 

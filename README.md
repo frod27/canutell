@@ -5,7 +5,8 @@ gamble and vote, then label every other player as human or agent. Rules and data
 [`docs/SPEC.md`](docs/SPEC.md). Build contract: [`CLAUDE.md`](CLAUDE.md). Decisions:
 [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
-**Current phase: 5 — accounts, trust levels, consent flows, integrity signals** (Phases 1–4 are complete).
+**Current phase: 6 — closed alpha** (Phases 1–5 are complete). How to launch and run it:
+[`docs/ALPHA.md`](docs/ALPHA.md).
 
 ```sh
 pnpm install
@@ -46,6 +47,10 @@ pnpm db:latency-model --out services/agents/data/latency.json   # human timing m
 pnpm db:humanlikeness                 # H per agent version (SPEC §Agents)
 pnpm db:integrity pending             # flagged account seats awaiting review (also: review, restore)
 pnpm consent:docs                     # regenerate docs/consent/ from the versioned consent texts
+pnpm ops:invite create --uses 10 --label "…"   # closed-alpha invite code (shown once, stored hashed)
+pnpm ops:report --since-days 7        # how the alpha is going: fun first, then data
+pnpm db:delete-account --match ID --seat N --yes   # privacy deletion on a player's request
+pnpm loadtest --store postgres --alpha   # load test in closed-alpha mode, with training-pool audit
 pnpm web:build && node apps/web/e2e/accounts.mjs   # browser test: real passkeys, sign-up to deletion
 pnpm loadtest --store postgres        # load test, plus database-vs-log and HTTP reveal checks
 TEST_DATABASE_URL=postgres://... pnpm test   # run DB tests on real Postgres (default: in-process PGlite)
@@ -53,17 +58,18 @@ TEST_DATABASE_URL=postgres://... pnpm test   # run DB tests on real Postgres (de
 
 ## Layout
 
-| Path                  | Status  | What                                                                                           |
-| --------------------- | ------- | ---------------------------------------------------------------------------------------------- |
-| `packages/protocol`   | built   | zod schemas: config, actions, events, per-seat views, WebSocket messages; rule constants       |
-| `packages/engine`     | built   | pure deterministic rules engine (depends only on zod and protocol)                             |
-| `packages/db`         | built   | migrations, match store, derived tables, reveals, accounts, trust, integrity, privacy deletion |
-| `packages/bots`       | built   | scripted policies and a WebSocket bot client that plays through the public protocol            |
-| `apps/server`         | built   | server-authoritative game server: matchmaking, timers, latency, logs; passkey accounts API     |
-| `apps/web`            | minimal | Next.js 15 client: lobby, every prompt, chat, reveal, sign-up/sign-in, account; installable    |
-| `sim/`                | built   | headless simulator and the independent log audit                                               |
-| `supabase/migrations` | built   | numbered SQL migrations (`0001` match log, `0002` baseline agents, `0003` accounts/integrity)  |
-| `services/agents`     | built   | Python agent service: `baseline-1` plays agent seats over the public protocol                  |
+| Path                  | Status  | What                                                                                             |
+| --------------------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `packages/protocol`   | built   | zod schemas: config, actions, events, per-seat views, WebSocket messages; rule constants         |
+| `packages/engine`     | built   | pure deterministic rules engine (depends only on zod and protocol)                               |
+| `packages/db`         | built   | migrations, match store, derived tables, reveals, accounts, trust, integrity, privacy deletion   |
+| `packages/bots`       | built   | scripted policies and a WebSocket bot client that plays through the public protocol              |
+| `apps/server`         | built   | server-authoritative game server: matchmaking, timers, latency, logs; passkey accounts API       |
+| `apps/web`            | minimal | Next.js 15 client: lobby, every prompt, chat, reveal, sign-up/sign-in, account; installable      |
+| `sim/`                | built   | headless simulator and the independent log audit                                                 |
+| `supabase/migrations` | built   | SQL migrations: `0001` log, `0002` agents, `0003` accounts/integrity, `0004` alpha               |
+| `services/agents`     | built   | Python agent service: `baseline-1` plays agent seats over the public protocol                    |
+| deployment            | built   | `apps/server/Dockerfile`, `services/agents/Dockerfile`, `fly.*.toml`, `.github/workflows/ci.yml` |
 
 ## Engine API
 
