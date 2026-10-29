@@ -49,6 +49,7 @@ async def test_plays_a_phase_through_the_protocol(views: list[dict[str, Any]]) -
                         "serverTime": 1000,
                         "resumedMatchId": None,
                         "account": None,
+                        "gameNights": None,
                     }
                 )
                 await ws.send_json(

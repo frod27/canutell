@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AccountSummarySchema, ClientEnvSchema } from './accounts';
+import { GameNightsSchema } from './alpha';
 import { ActionSchema } from './actions';
 import { ModeSchema, PhaseSchema, SeatIdSchema, ServerTimeSchema } from './common';
 import { RevealViewSchema, SeatViewSchema } from './views';
@@ -74,6 +75,8 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
     resumedMatchId: z.string().nullable(),
     /** The player's own account when signed in with a session token; null for guests and bots. */
     account: AccountSummarySchema.nullable(),
+    /** Closed alpha: upcoming game nights (the same for everyone), or null when none are scheduled. */
+    gameNights: GameNightsSchema.nullable(),
   }),
   /** Deliberately count-free (see header). */
   z.object({

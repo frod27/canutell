@@ -56,6 +56,8 @@ export const WebAuthnResponseSchema = z.looseObject({
 export const RegisterOptionsRequestSchema = z.object({
   /** The terms version the player accepted on the first sign-up screen. */
   termsVersion: z.literal(CONSENT_VERSIONS.terms),
+  /** Closed alpha: the invite code (required when the server has INVITES_REQUIRED). */
+  invite: z.string().min(1).max(32).optional(),
 });
 /** `options` is PublicKeyCredentialCreationOptionsJSON, passed straight to the browser library. */
 export const CeremonyOptionsResponseSchema = z.object({

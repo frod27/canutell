@@ -48,9 +48,43 @@
               "type": "null"
             }
           ]
+        },
+        "gameNights": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "timeZone": {
+                  "type": "string"
+                },
+                "windows": {
+                  "maxItems": 10,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "start": {
+                        "type": "number"
+                      },
+                      "end": {
+                        "type": "number"
+                      }
+                    },
+                    "required": ["start", "end"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": ["timeZone", "windows"],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
-      "required": ["type", "playerId", "token", "serverTime", "resumedMatchId", "account"],
+      "required": ["type", "playerId", "token", "serverTime", "resumedMatchId", "account", "gameNights"],
       "additionalProperties": false
     },
     {
