@@ -804,10 +804,9 @@ questions:
 - **Agent callback URL (bug found).** The server used to tell the agent service its own bind address.
   That only works on one host. `AGENT_CALLBACK_URL` now sets the address agents connect back to, e.g.
   `ws://canutell-server.internal:8787` on Fly's private network.
-- **Not verified here:**
-  - `fly.server.toml` and `fly.agents.toml` are written from Fly's documented format but untested
-    against `flyctl`, which needs an account.
-  - `.github/workflows/ci.yml` runs only on GitHub.
+- **Not verified:** `fly.server.toml` and `fly.agents.toml` are written from Fly's documented format but
+  untested against `flyctl`, which needs an account. The CI workflow has passed on GitHub (see the
+  acceptance results).
 - **One machine.** Matches live in memory, so the server runs as exactly one machine with auto-stop off.
   Deploy outside game nights.
 
@@ -846,7 +845,9 @@ questions:
   - both Docker images built, and ran together for a full match with `baseline-1` seated through
     `AGENT_CALLBACK_URL`;
   - the server bundle ran without `node_modules`.
-  - Fly configs and CI were not run (see "Deployment").
+  - the GitHub Actions workflow passed all three jobs (TypeScript with Postgres 16, Python, Docker
+    builds) on its first run, for commit `238e78b`;
+  - the Fly configs were not run (see "Deployment").
 - **Suite:** 275 TypeScript tests pass on both PGlite and Postgres 16. The simulator ran 10,000 matches
   per mode with 0 invariant violations. 68 Python tests pass; ruff and pyright are clean.
 
