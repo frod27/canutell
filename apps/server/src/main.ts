@@ -8,6 +8,7 @@ import {
   type Sql,
 } from '@canutell/db';
 import { simpleWebAuthn } from './accounts-api';
+import { parseGameNights } from './game-nights';
 import { agentServiceSeater } from './agent-service';
 import { ScaledClock } from './clock';
 import { startGameServer } from './server';
@@ -26,6 +27,12 @@ import { JsonlStore, type MatchStore } from './store';
 //                  the Python agent service (services/agents). Without it, agent seats get scripted bots.
 //   WEBAUTHN_RP_ID   passkey relying-party ID: the web client's domain (default localhost). Needs DATABASE_URL.
 //   WEBAUTHN_ORIGINS comma-separated web origins allowed to sign in (default http://localhost:3000)
+//   Closed alpha (DECISIONS Phase 6; docs/ALPHA.md):
+//   ACCOUNTS_ONLY=1    refuse guests (needs DATABASE_URL)
+//   INVITES_REQUIRED=1 sign-up needs an invite code (pnpm ops:invite)
+//   ALPHA=1            flag matches `alpha` (research-eligible) instead of the build phase
+//   GAME_NIGHTS        e.g. "Tue,Thu,Sun 20:00-22:00 Europe/Madrid" (shown in the lobby)
+//   AGENT_CALLBACK_URL the WebSocket URL agents use to reach this server (e.g. ws://canutell-server.internal:8787)
 
 const env = process.env;
 const speed = Number(env.CLOCK_SPEED ?? 1);
@@ -91,8 +98,29 @@ log(
     : 'accounts off (no DATABASE_URL)',
 );
 
+const flag = (name: string) => env[name] === '1' || env[name] === 'true';
+if ((flag('ACCOUNTS_ONLY') || flag('INVITES_REQUIRED')) && !accounts) {
+  console.error('ACCOUNTS_ONLY / INVITES_REQUIRED need DATABASE_URL (accounts live in the database)');
+  process.exit(1);
+}
+if (flag('ALPHA') && fill !== null) {
+  console.error('ALPHA with FILL_BOTS_MS would put bot-filled matches in the alpha; unset FILL_BOTS_MS');
+  process.exit(1);
+}
+const gameNights = env.GAME_NIGHTS ? parseGameNights(env.GAME_NIGHTS) : undefined;
+if (flag('ALPHA'))
+  log(
+    `closed alpha: accounts only ${flag('ACCOUNTS_ONLY')}, invites ${flag('INVITES_REQUIRED')}, ` +
+      `game nights ${env.GAME_NIGHTS ?? 'none'}`,
+  );
+
 const server = await startGameServer({
   accounts,
+  accountsOnly: flag('ACCOUNTS_ONLY'),
+  invitesRequired: flag('INVITES_REQUIRED'),
+  alpha: flag('ALPHA'),
+  gameNights,
+  agentCallbackUrl: env.AGENT_CALLBACK_URL,
   agentSeater,
   clock,
   store,

@@ -4,13 +4,17 @@ import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import WebSocket from 'ws';
 import { BotClient, POLICY_NAMES, type BotResult } from '@canutell/bots';
 import {
   PostgresStore,
   answerAge,
   canonicalJson,
   createAccount,
+  createInvite,
   createSession,
+  formatOpsReport,
+  opsReport,
   integrityApplies,
   setConsent,
   dbRevealSource,
@@ -91,8 +95,10 @@ function parse() {
       'timeout-pct': { type: 'string', default: '5' },
       store: { type: 'string', default: 'memory' },
       agents: { type: 'string', default: 'scripted' },
+      alpha: { type: 'boolean', default: false },
     },
   });
+  if (values.alpha && values.store !== 'postgres') throw new Error('--alpha needs --store postgres');
   if (values.agents !== 'scripted' && values.agents !== 'python')
     throw new Error('--agents must be scripted or python');
   if (values.store !== 'memory' && values.store !== 'postgres')
@@ -107,6 +113,7 @@ function parse() {
     timeoutPct: Number(values['timeout-pct']),
     store: values.store as 'memory' | 'postgres',
     agents: values.agents as 'scripted' | 'python',
+    alpha: values.alpha === true,
   };
 }
 
@@ -156,6 +163,10 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   const server = await startGameServer({
     clock,
     accounts: sql ? { sql, ceremonies: NO_CEREMONIES } : undefined,
+    // Closed alpha (Phase 6): accounts only, invites, `alpha` cohort flag.
+    accountsOnly: o.alpha,
+    invitesRequired: o.alpha,
+    alpha: o.alpha,
     store: pg ? tee(store, pg) : store,
     reveals,
     spawnBot: (args) => launch(args.url, args.token, undefined),
@@ -165,6 +176,11 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
 
   const started = performance.now();
   const accounts = new Map<string, LoadAccount>();
+  const violations: Violation[] = [];
+  const fail = (check: string, detail: string) => violations.push({ check, detail });
+  if (o.alpha) await auditGuestRefused(server.url, fail);
+  // Invites in groups of 10, like friends inviting friends (the ops report counts shared-invite matches).
+  let invite: { code: string; left: number } | null = null;
   const humans: BotClient[] = [];
   const unseated = () => humans.filter((b) => b.seatedMatchId === null).length;
   while (server.stats().matchesStarted < o.matches) {
@@ -173,8 +189,17 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
       await sleep(10);
       continue;
     }
-    if (sql && humans.length % 2 === 0) {
-      const a = await makeAccount(sql, accounts.size);
+    if (sql && (o.alpha || humans.length % 2 === 0)) {
+      if (o.alpha && !invite?.left) {
+        const { code } = await createInvite(sql, {
+          label: `load test ${mode}`,
+          maxUses: 10,
+          now: Date.now(),
+        });
+        invite = { code, left: 10 };
+      }
+      if (invite) invite.left--;
+      const a = await makeAccount(sql, accounts.size, o.alpha ? invite!.code : undefined);
       accounts.set(a.playerId, a);
       humans.push(launch(server.url, a.session, mode, a.env ? CLEAN_ENV : undefined));
     } else humans.push(launch(server.url, null, mode));
@@ -187,8 +212,6 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   await Promise.allSettled(pending);
   const seconds = (performance.now() - started) / 1000;
 
-  const violations: Violation[] = [];
-  const fail = (check: string, detail: string) => violations.push({ check, detail });
   if (pg) {
     await pg.drain();
     await auditRevealEndpoint(server.url, store, clients, fail);
@@ -216,7 +239,8 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   if (sql) {
     for (const e of dbErrors) fail('db_write', e);
     for (const m of store.matches.values()) await auditDatabase(sql, m, fail);
-    await auditAccounts(sql, [...store.matches.values()], clients, accounts, fail);
+    await auditAccounts(sql, [...store.matches.values()], clients, accounts, fail, o.alpha);
+    if (o.alpha) await auditOpsReport(sql, [...store.matches.keys()], fail);
     await sql.close();
   }
 
@@ -383,11 +407,12 @@ interface LoadAccount {
   playerId: string;
   session: string;
   trust: TrustLevel;
+  research: boolean;
   env: boolean;
 }
 
 /** Account i: T1, T2, or T2 with research consent (cycling); half report a client environment. */
-async function makeAccount(sql: Sql, i: number): Promise<LoadAccount> {
+async function makeAccount(sql: Sql, i: number, invite?: string): Promise<LoadAccount> {
   const now = Date.now();
   const playerId = await createAccount(sql, {
     userHandle: randomBytes(32),
@@ -401,6 +426,7 @@ async function makeAccount(sql: Sql, i: number): Promise<LoadAccount> {
     },
     termsVersion: 1,
     now,
+    invite,
   });
   let trust: TrustLevel = 'T1';
   if (i % 3 !== 0) trust = (await answerAge(sql, playerId, { year: 1990, month: 1, now })).trustLevel;
@@ -409,11 +435,20 @@ async function makeAccount(sql: Sql, i: number): Promise<LoadAccount> {
     playerId,
     session: await createSession(sql, playerId, now),
     trust,
+    research: i % 3 === 2,
     env: Math.floor(i / 3) % 2 === 0,
   };
 }
 
-const accountChecks = { accounts: 0, accountSeats: 0, guestSeats: 0, flaggedSeats: 0, lowered: 0 };
+const accountChecks = {
+  accounts: 0,
+  accountSeats: 0,
+  guestSeats: 0,
+  flaggedSeats: 0,
+  lowered: 0,
+  poolSeats: 0,
+  sharedInviteMatches: 0,
+};
 const lower = (t: TrustLevel): TrustLevel => (t === 'T3' ? 'T2' : t === 'T2' ? 'T1' : t);
 
 async function auditAccounts(
@@ -422,6 +457,7 @@ async function auditAccounts(
   clients: ClientLog[],
   accounts: Map<string, LoadAccount>,
   fail: (check: string, detail: string) => void,
+  alpha: boolean,
 ): Promise<void> {
   accountChecks.accounts += accounts.size;
   const known = new Set<string>();
@@ -502,8 +538,99 @@ async function auditAccounts(
       fail('trust_history', `${a.playerId}: ${lowered[0]!.n} automation_flag rows`);
     accountChecks.lowered += lowered[0]!.n;
   }
-  const pool = await sql.query<{ n: number }>('select count(*)::int as n from training_seats');
-  if (pool[0]!.n !== 0) fail('training_pool', `${pool[0]!.n} seats in the pool from dev (phase5) matches`);
+  const ids = matches.map((m) => m.meta.matchId);
+  if (!alpha) {
+    const pool = await sql.query<{ n: number }>(
+      'select count(*)::int as n from training_seats where match_id = any($1::text[])',
+      [ids],
+    );
+    if (pool[0]!.n !== 0) fail('training_pool', `${pool[0]!.n} seats in the pool from dev (phase5) matches`);
+    return;
+  }
+  // Alpha: matches carry the cohort flag and no build phase.
+  for (const m of matches) {
+    if (!m.meta.flags.includes('alpha') || m.meta.flags.some((f) => f.startsWith('phase')))
+      fail('alpha_flags', `${m.meta.matchId}: ${m.meta.flags.join(',')}`);
+    if (m.meta.occupants.some((o) => o.kind === 'human' && !accounts.has(o.playerId)))
+      fail('alpha_guest', `${m.meta.matchId}: a human seat without an account`);
+  }
+  // The training pool, checked against an independent computation. Load tests run on a sped-up clock, which
+  // alone keeps every seat out; so in this throwaway database only, `sped_up` is lifted for the comparison
+  // and put back afterwards.
+  await sql.query(
+    `update matches set flags = array_remove(flags, 'sped_up') where match_id = any($1::text[])`,
+    [ids],
+  );
+  try {
+    const flagged = new Set(
+      (
+        await sql.query<{ k: string }>(
+          `select match_id || '/' || seat_id as k from integrity_signals
+            where flagged and match_id = any($1::text[])`,
+          [ids],
+        )
+      ).map((r) => r.k),
+    );
+    const want = new Set<string>();
+    for (const m of matches) {
+      if (m.meta.status !== 'completed') continue;
+      for (const o of m.meta.occupants) {
+        const a = o.kind === 'human' ? accounts.get(o.playerId) : undefined;
+        if (a && a.trust === 'T2' && a.research && !flagged.has(`${m.meta.matchId}/${o.seat}`))
+          want.add(`${m.meta.matchId}/${o.seat}`);
+      }
+    }
+    const got = new Set(
+      (
+        await sql.query<{ k: string }>(
+          `select match_id || '/' || seat_id as k from training_seats where match_id = any($1::text[])`,
+          [ids],
+        )
+      ).map((r) => r.k),
+    );
+    for (const k of want) if (!got.has(k)) fail('training_pool', `${k}: eligible seat missing from the pool`);
+    for (const k of got) if (!want.has(k)) fail('training_pool', `${k}: ineligible seat in the pool`);
+    accountChecks.poolSeats += got.size;
+  } finally {
+    await sql.query(
+      `update matches set flags = array_append(flags, 'sped_up') where match_id = any($1::text[])`,
+      [ids],
+    );
+  }
+}
+
+/** Closed alpha: a guest gets `account_required` and never a welcome. */
+async function auditGuestRefused(url: string, fail: (check: string, detail: string) => void): Promise<void> {
+  const frames: ServerMessage[] = [];
+  const ws = new WebSocket(url);
+  await new Promise((r) => ws.once('open', r));
+  ws.on('message', (d) => frames.push(JSON.parse(String(d)) as ServerMessage));
+  ws.send(JSON.stringify({ type: 'hello', token: null }));
+  await sleep(300);
+  ws.close();
+  if (
+    frames.some((f) => f.type === 'welcome') ||
+    !frames.some((f) => f.type === 'error' && f.code === 'account_required')
+  )
+    fail('alpha_guest_refused', JSON.stringify(frames));
+}
+
+/**
+ * The operator report runs on the alpha data and never shows a player id. (Its time window can't isolate one
+ * mode here: load-test matches are stamped on the sped-up clock, so the shared-invite count is per match id.)
+ */
+async function auditOpsReport(sql: Sql, ids: string[], fail: (check: string, detail: string) => void) {
+  const r = await opsReport(sql, { since: 0 });
+  if (/p_[0-9a-f]{8}/.test(JSON.stringify(r) + formatOpsReport(r)))
+    fail('ops_report', 'player id in the report');
+  const [row] = await sql.query<{ n: number }>(
+    `select count(distinct x.match_id)::int as n from (
+       select s.match_id from seats s join identity.identities i on i.player_id = s.player_id
+        where s.match_id = any($1::text[]) and i.invite_id is not null
+        group by s.match_id, i.invite_id having count(*) >= 2) x`,
+    [ids],
+  );
+  accountChecks.sharedInviteMatches = row?.n ?? 0;
 }
 
 /** Every seated human can reopen their reveal over HTTP; nobody else can. */
@@ -622,7 +749,9 @@ async function main(): Promise<number> {
       byCheck[v.check] ??= { n: 0, eg: v.detail };
       byCheck[v.check]!.n++;
     }
-    console.log(`CANUTELL load test — mode ${mode}, clock ×${o.speed}, store ${o.store}, agents ${o.agents}`);
+    console.log(
+      `CANUTELL load test — mode ${mode}, clock ×${o.speed}, store ${o.store}, agents ${o.agents}${o.alpha ? ', closed alpha' : ''}`,
+    );
     console.log(
       `  ${r.matches} matches over WebSockets in ${r.seconds.toFixed(1)}s wall time (${r.clients} seated clients)`,
     );
@@ -642,9 +771,12 @@ async function main(): Promise<number> {
       const a = accountChecks;
       console.log(
         `  accounts: ${a.accounts} made; ${a.accountSeats} account seats (${a.flaggedSeats} flagged, ${a.lowered} lowered a level), ` +
-          `${a.guestSeats} guest seats under per-match pseudonyms; training pool empty`,
+          (o.alpha
+            ? `0 guests (accounts only); training pool = exactly the ${a.poolSeats} eligible seats; ` +
+              `${a.sharedInviteMatches} matches with players from one invite`
+            : `${a.guestSeats} guest seats under per-match pseudonyms; training pool empty`),
       );
-      a.accounts = a.accountSeats = a.guestSeats = a.flaggedSeats = a.lowered = 0;
+      a.accounts = a.accountSeats = a.guestSeats = a.flaggedSeats = a.lowered = a.poolSeats = 0;
     }
     if (o.agents === 'python') {
       console.log(

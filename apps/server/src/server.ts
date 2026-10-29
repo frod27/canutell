@@ -5,10 +5,12 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { BotClient, POLICY_NAMES } from '@canutell/bots';
 import { trustLevels, type RevealSource, type Sql, type StoredClientEnv } from '@canutell/db';
 import { AccountsApi, type PasskeyCeremonies } from './accounts-api';
+import { nextGameNights, type GameNightRule } from './game-nights';
 import type { AgentSeater } from './agent-service';
 import {
   AI_DISCLOSURE,
   ClientMessageSchema,
+  ACCOUNT_REQUIRED,
   SEAT_COUNT,
   SESSION_TOKEN_PATTERN,
   type AccountSummary,
@@ -66,6 +68,18 @@ export interface GameServerOptions {
    */
   accounts?: { sql: Sql; ceremonies: PasskeyCeremonies; now?: () => number };
   /**
+   * Closed alpha (DECISIONS Phase 6). `accountsOnly`: a hello without a valid session is refused with
+   * `account_required` (bots and agents are seated by the server and unaffected). `invitesRequired`: sign-up
+   * needs an invite code. `alpha`: matches are flagged `alpha` (a cohort, research-eligible) instead of a
+   * build phase. `gameNights`: the schedule sent in every welcome, the same for everyone.
+   */
+  accountsOnly?: boolean;
+  invitesRequired?: boolean;
+  alpha?: boolean;
+  gameNights?: readonly GameNightRule[];
+  /** The WebSocket URL agents use to reach this server (e.g. over a private network). Default: its own URL. */
+  agentCallbackUrl?: string;
+  /**
    * Seats agents from the agent service (services/agents). Without it — or when it fails for a seat — that
    * seat gets a scripted bot (`scripted-0`), and a failure is flagged `agent_fallback`.
    */
@@ -94,6 +108,8 @@ interface Player {
   storedIds: Map<string, string>;
   /** Client signals stored for the current match. */
   signals: number;
+  /** Wall-clock time this player joined the public queue (for the formation log only). */
+  queuedAt: number | null;
 }
 
 export interface GameServer {
@@ -125,6 +141,7 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         ceremonies: o.accounts.ceremonies,
         now: o.accounts.now,
         log,
+        invitesRequired: o.invitesRequired,
         onSessionsRevoked: (playerId) => {
           const p = byId.get(playerId);
           if (p?.account) p.socket?.close(4001, 'signed out');
@@ -155,6 +172,7 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       env: null,
       storedIds: new Map(),
       signals: 0,
+      queuedAt: null,
     };
     players.set(p.token, p);
     byId.set(p.playerId, p);
@@ -210,7 +228,11 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         .filter((b) => b.kind === 'agent')
         .map(async (b) => {
           const seat = o.agentSeater
-            ? await o.agentSeater({ serverUrl: url, token: b.token, clockSpeed: clock.speed })
+            ? await o.agentSeater({
+                serverUrl: o.agentCallbackUrl ?? url,
+                token: b.token,
+                clockSpeed: clock.speed,
+              })
             : null;
           if (seat) {
             agentVersion.set(b, seat.agentVersion);
@@ -250,7 +272,8 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         ? { seat, kind: p.kind, playerId: stored, trustLevel: (p.account && trust.get(p.playerId)) || 'T0' }
         : { seat, kind: p.kind, playerId: stored };
     });
-    const flags: MatchFlag[] = [BUILD_PHASE_FLAG];
+    // Alpha matches are the first real data: a cohort label, no build-phase flag.
+    const flags: MatchFlag[] = [o.alpha ? 'alpha' : BUILD_PHASE_FLAG];
     if (scripted.length > 0) flags.push('scripted_agents');
     if ([...agentVersion.values()].some((v) => v !== SCRIPTED_AGENT_VERSION)) flags.push('baseline_agents');
     for (const f of [...agentFlags].sort()) flags.push(f);
@@ -279,6 +302,17 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       p.signals = 0;
     });
     runner.start();
+    // Queue waits for the operator (pnpm ops:report points here). Never sent to any client.
+    const waits = roster
+      .filter((p) => p.kind === 'human' && p.queuedAt !== null)
+      .map((p) => Date.now() - p.queuedAt!)
+      .sort((a, b) => a - b);
+    for (const p of roster) p.queuedAt = null;
+    if (waits.length > 0)
+      log(
+        `match ${matchId} formed (${req.mode}${req.isParty ? ', party' : ''}); queue waits ms: ` +
+          `min ${waits[0]} median ${waits[Math.floor(waits.length / 2)]} max ${waits[waits.length - 1]}`,
+      );
     // Everyone already connected (humans, and agents that answered the seat request quickly) is told now;
     // anyone connecting later is attached by `hello`.
     for (const p of roster) {
@@ -372,6 +406,9 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       return;
     }
     if (path === '/health') return reply(res, 200, { ok: true, matches: runners.size });
+    // Public and the same for everyone (also for visitors the closed alpha refuses a welcome).
+    if (path === '/api/game-nights' && req.method === 'GET')
+      return reply(res, 200, o.gameNights ? nextGameNights(o.gameNights, Date.now()) : null);
     if (accounts?.handle(req, res, path, (status, body) => reply(res, status, body))) return;
     if (path.startsWith('/api/auth/') || path === '/api/me' || path.startsWith('/api/me/'))
       return reply(res, 501, { error: 'accounts need the database' });
@@ -462,7 +499,11 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
     });
   });
 
-  const hello = async (ws: WebSocket, token: string | null, current: Player | null): Promise<Player> => {
+  const hello = async (
+    ws: WebSocket,
+    token: string | null,
+    current: Player | null,
+  ): Promise<Player | null> => {
     let p: Player | undefined;
     let account: AccountSummary | null = null;
     if (token && SESSION_TOKEN_PATTERN.test(token)) {
@@ -491,15 +532,29 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
             env: null,
             storedIds: new Map(),
             signals: 0,
+            queuedAt: null,
           };
           byId.set(p.playerId, p);
         }
       }
     } else if (token) p = players.get(token);
+    // Closed alpha: only accounts play. Bot and agent tokens are issued by the server itself.
+    const refused = o.accountsOnly === true && !account && !(p && p.kind !== 'human');
     if (current && p !== current) {
       // A second hello on one socket switches identity; detach the old one cleanly.
       current.socket = null;
       if (current.matchId) runners.get(current.matchId)?.detach(current.seat!);
+    }
+    if (refused) {
+      if (ws.readyState === WebSocket.OPEN)
+        ws.send(
+          JSON.stringify({
+            type: 'error',
+            code: ACCOUNT_REQUIRED,
+            message: 'The closed alpha is for invited accounts: sign in or sign up with your invite code.',
+          }),
+        );
+      return null;
     }
     if (!p) p = newPlayer('human');
     if (p.socket && p.socket !== ws) p.socket.close(4000, 'replaced by a new connection');
@@ -513,6 +568,7 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       serverTime: clock.now(),
       resumedMatchId: runner ? runner.matchId : null,
       account,
+      gameNights: o.gameNights ? nextGameNights(o.gameNights, Date.now()) : null,
     });
     if (runner && p.seat !== null) {
       send(p, {
@@ -535,6 +591,7 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         if (inMatch) return error('in_match', 'finish your current match first');
         matchmaker.leaveParty(p.playerId);
         matchmaker.join(p.playerId, msg.mode);
+        p.queuedAt = Date.now();
         if (p.matchId === null)
           send(p, { type: 'queue.status', mode: msg.mode, state: 'searching', disclosure: AI_DISCLOSURE });
         return;

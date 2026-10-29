@@ -17,6 +17,8 @@ import {
   deleteAccount,
   findPasskey,
   getAccount,
+  inviteUsable,
+  submitFeedback,
   listPasskeys,
   passkeyUsed,
   removePasskey,
@@ -31,6 +33,7 @@ import {
 } from '@canutell/db';
 import {
   AgeRequestSchema,
+  FeedbackRequestSchema,
   CeremonyVerifyRequestSchema,
   RegisterOptionsRequestSchema,
   ResearchConsentRequestSchema,
@@ -42,7 +45,7 @@ import type { z } from 'zod';
 
 // Passkey accounts over HTTP (DECISIONS "Phase 5 plan": our own WebAuthn, no email or phone).
 //
-//   POST   /api/auth/register/options   {termsVersion}       → {flowId, options}
+//   POST   /api/auth/register/options   {termsVersion, invite?} → {flowId, options}   (invite: closed alpha)
 //   POST   /api/auth/register/verify    {flowId, response}   → {session, account}   (new T1 account)
 //   POST   /api/auth/login/options                           → {flowId, options}
 //   POST   /api/auth/login/verify       {flowId, response}   → {session, account}
@@ -55,6 +58,7 @@ import type { z } from 'zod';
 //   DELETE /api/me/passkeys/:id
 //   POST   /api/me/sessions/revoke                           sign out everywhere
 //   DELETE /api/me                                           delete the account (privacy deletion)
+//   POST   /api/matches/:id/feedback    {fun, tags, comment} post-match survey (seated account, once)
 //
 // /api/me* need `Authorization: Bearer <session>`. Sign-in is usernameless (discoverable credentials), user
 // verification is required, and attestation is `none`, so no authenticator model is collected.
@@ -148,6 +152,7 @@ interface Flow {
   expiresAt: number;
   userHandle?: Uint8Array;
   termsVersion?: number;
+  invite?: string;
   playerId?: string;
 }
 
@@ -163,6 +168,8 @@ export interface AccountsApiOptions {
   log?: (msg: string) => void;
   /** Called after an account is deleted or signs out everywhere, so live sockets can be dropped. */
   onSessionsRevoked?: (playerId: string) => void;
+  /** Closed alpha: sign-up needs a valid invite code (DECISIONS Phase 6). */
+  invitesRequired?: boolean;
 }
 
 class HttpError extends Error {
@@ -198,7 +205,9 @@ export class AccountsApi {
     path: string,
     reply: (status: number, body?: unknown) => void,
   ): boolean {
-    if (!path.startsWith('/api/auth/') && path !== '/api/me' && !path.startsWith('/api/me/')) return false;
+    const feedback = /^\/api\/matches\/[A-Za-z0-9-]{1,128}\/feedback$/.test(path);
+    if (!feedback && !path.startsWith('/api/auth/') && path !== '/api/me' && !path.startsWith('/api/me/'))
+      return false;
     this.route(req, path).then(
       ([status, body]) => reply(status, body),
       (e) => {
@@ -219,6 +228,9 @@ export class AccountsApi {
     const sql = this.o.sql;
     if (m === 'POST' && path === '/api/auth/register/options') {
       const body = await this.body(req, RegisterOptionsRequestSchema);
+      // Checked before the passkey ceremony (nothing consumed); redeemed atomically when the account is made.
+      if (this.o.invitesRequired && !(body.invite && (await inviteUsable(sql, body.invite, this.now()))))
+        throw new HttpError(403, 'invalid_invite');
       const userHandle = randomBytes(32);
       const tag = randomBytes(3).toString('hex').toUpperCase();
       const options = await this.o.ceremonies.registrationOptions({
@@ -234,6 +246,7 @@ export class AccountsApi {
             challenge: options.challenge,
             userHandle,
             termsVersion: body.termsVersion,
+            invite: this.o.invitesRequired ? body.invite : undefined,
           }),
           options,
         },
@@ -250,6 +263,7 @@ export class AccountsApi {
         passkey,
         termsVersion: flow.termsVersion!,
         now,
+        invite: flow.invite,
       });
       return [200, await this.session(playerId)];
     }
@@ -285,6 +299,12 @@ export class AccountsApi {
       return [204, undefined];
     }
     if (m === 'GET' && path === '/api/me') return [200, account];
+    const fb = /^\/api\/matches\/([A-Za-z0-9-]{1,128})\/feedback$/.exec(path);
+    if (m === 'POST' && fb) {
+      const body = await this.body(req, FeedbackRequestSchema);
+      await submitFeedback(sql, { ...body, matchId: fb[1]!, playerId: me, now: this.now() });
+      return [204, undefined];
+    }
     if (m === 'POST' && path === '/api/me/age') {
       const body = await this.body(req, AgeRequestSchema);
       return [200, await answerAge(sql, me, { ...body, now: this.now() })];
