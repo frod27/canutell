@@ -1,8 +1,17 @@
 import type { MatchInput } from '@canutell/engine';
 import type { MatchEvent, RevealView, SeatId } from '@canutell/protocol';
 import { deriveRows, type DerivedRows } from './derive';
+import { deriveIntegrity, type IntegrityRow, type IntegritySeat } from './integrity';
 import type { Sql } from './sql';
-import type { AnnotationRecord, ConnectionRecord, MatchStatus, RejectionRecord, TimingRecord } from './types';
+import type {
+  AnnotationRecord,
+  ClientSignalRecord,
+  ConnectionRecord,
+  MatchStatus,
+  RejectionRecord,
+  StoredClientEnv,
+  TimingRecord,
+} from './types';
 
 // Reads and rebuilds. Writes during a live match go through PostgresStore.
 
@@ -49,6 +58,7 @@ export interface LoadedMatch {
   connections: ConnectionRecord[];
   rejections: RejectionRecord[];
   annotations: AnnotationRecord[];
+  clientSignals: ClientSignalRecord[];
 }
 
 export async function loadMatch(sql: Sql, matchId: string): Promise<LoadedMatch | null> {
@@ -84,6 +94,12 @@ export async function loadMatch(sql: Sql, matchId: string): Promise<LoadedMatch 
     'select seq, seat_id, confidence from agent_annotations where match_id = $1 order by seq',
     [matchId],
   );
+  const signals = await sql.query<{
+    seat_id: number;
+    at: unknown;
+    kind: ClientSignalRecord['kind'];
+    value: unknown;
+  }>('select seat_id, at, kind, value from client_signals where match_id = $1 order by idx', [matchId]);
   return {
     matchId,
     status: m.status,
@@ -134,19 +150,59 @@ export async function loadMatch(sql: Sql, matchId: string): Promise<LoadedMatch 
       seat: a.seat_id as SeatId,
       confidence: a.confidence,
     })),
+    clientSignals: signals.map((c) => ({
+      seat: c.seat_id as SeatId,
+      at: ms(c.at),
+      kind: c.kind,
+      value: (c.value as StoredClientEnv | null) ?? null,
+    })),
   };
+}
+
+/** Seats as the integrity derivation needs them: kind, trust at match time, and whether the account is gone. */
+export async function integritySeats(sql: Sql, matchId: string): Promise<IntegritySeat[]> {
+  const rows = await sql.query<{
+    seat_id: number;
+    kind: IntegritySeat['kind'];
+    trust_level_at_match: IntegritySeat['trustLevel'];
+    deleted: boolean;
+  }>(
+    `select s.seat_id, s.kind, s.trust_level_at_match, (p.deleted_at is not null) as deleted
+       from seats s left join players p on p.player_id = s.player_id
+      where s.match_id = $1 order by s.seat_id`,
+    [matchId],
+  );
+  return rows.map((r) => ({
+    seat: r.seat_id as SeatId,
+    kind: r.kind,
+    trustLevel: r.trust_level_at_match,
+    deleted: r.deleted,
+  }));
 }
 
 // ---------- derived tables ----------
 
-const DERIVED = ['decisions', 'stakes', 'messages', 'ballots', 'seat_results'] as const;
+const DERIVED = ['decisions', 'stakes', 'messages', 'ballots', 'seat_results', 'integrity_signals'] as const;
 
-/** Replace one match's derived rows with a fresh derivation from its log, in one transaction. */
-export async function rebuildDerived(sql: Sql, matchId: string): Promise<DerivedRows> {
+/**
+ * Replace one match's derived rows with a fresh derivation from its log, in one transaction. That includes
+ * integrity_signals (SPEC §Integrity). Trust changes are NOT re-applied here: they happen once, at match end
+ * (applyMatchTrust).
+ */
+export async function rebuildDerived(
+  sql: Sql,
+  matchId: string,
+): Promise<DerivedRows & { integrity: IntegrityRow[] }> {
   return sql.transaction(async (tx) => {
     const m = await loadMatch(tx, matchId);
     if (!m) throw new Error(`no match ${matchId}`);
     const rows = deriveRows(matchId, m.events, m.timings, m.annotations);
+    const integrity = deriveIntegrity({
+      seats: await integritySeats(tx, matchId),
+      events: m.events,
+      timings: m.timings,
+      clientSignals: m.clientSignals,
+    });
     for (const t of DERIVED) await tx.query(`delete from ${t} where match_id = $1`, [matchId]);
     const withId = <T extends object>(r: T) => ({ match_id: matchId, ...r });
     await insertRows(
@@ -234,7 +290,13 @@ export async function rebuildDerived(sql: Sql, matchId: string): Promise<Derived
       },
       rows.seatResults.map(withId),
     );
-    return rows;
+    await insertRows(
+      tx,
+      'integrity_signals',
+      { match_id: null, seat_id: null, signal: null, value: null, flagged: null },
+      integrity.map(withId),
+    );
+    return { ...rows, integrity };
   });
 }
 
@@ -432,9 +494,10 @@ export async function stakesForSeat(sql: Sql, matchId: string, seat: SeatId): Pr
 // ---------- privacy deletion (the only code allowed to remove log rows) ----------
 
 /**
- * Deletes whole matches (log, derived rows, seats) that carry `flag`, then players left with no seats.
+ * Deletes whole matches (log, derived rows, seats) that carry `flag`, then the players who sat in them and
+ * have no seat left, with everything about them (identity, passkeys, sessions, consents, trust history).
  * The append-only triggers allow this only because the transaction sets canutell.privacy_deletion.
- * Used to purge pre-Phase-5 dev data before the closed alpha (DECISIONS "Guest data before accounts").
+ * Used to purge pre-alpha dev data before the closed alpha (DECISIONS "Guest data before accounts").
  */
 export async function purgeMatchesWithFlag(
   sql: Sql,
@@ -442,13 +505,26 @@ export async function purgeMatchesWithFlag(
 ): Promise<{ matches: number; players: number }> {
   return sql.transaction(async (tx) => {
     await tx.exec(`set local canutell.privacy_deletion = 'on'`);
+    const sat = await tx.query<{ player_id: string }>(
+      `select distinct s.player_id from seats s join matches m using (match_id)
+        where $1 = any(m.flags) and s.player_id is not null`,
+      [flag],
+    );
     const deleted = await tx.query<{ match_id: string }>(
       'delete from matches where $1 = any(flags) returning match_id',
       [flag],
     );
-    const players = await tx.query<{ player_id: string }>(
-      'delete from players p where not exists (select 1 from seats s where s.player_id = p.player_id) returning player_id',
-    );
-    return { matches: deleted.length, players: players.length };
+    const orphans = (
+      await tx.query<{ player_id: string }>(
+        `select p.player_id from players p
+          where p.player_id = any($1::text[])
+            and not exists (select 1 from seats s where s.player_id = p.player_id)`,
+        [sat.map((r) => r.player_id)],
+      )
+    ).map((r) => r.player_id);
+    for (const t of ['identity.identities', 'consents', 'trust_changes'])
+      await tx.query(`delete from ${t} where player_id = any($1::text[])`, [orphans]);
+    await tx.query('delete from players where player_id = any($1::text[])', [orphans]);
+    return { matches: deleted.length, players: orphans.length };
   });
 }

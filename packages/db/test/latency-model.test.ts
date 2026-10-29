@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PostgresStore, exportLatencyModel, type Sql } from '../src';
-import { feed, freshDb, metaFor, playerIdFor, simMatch } from './helpers';
+import { feed, freshDb, makeAccount, metaFor, playerIdFor, simMatch } from './helpers';
 
 // CLAUDE.md invariants 10 and 14: agents time themselves from human data, and only from data that may be
-// used for training (trust >= T2, research consent, not dev/bot/sped-up matches).
+// used for training: the training_seats view (trust >= T2, research consent, clean, not dev/bot/sped-up).
 
 let sql: Sql;
 let done: () => Promise<void>;
@@ -15,18 +15,15 @@ function useFreshDb() {
   afterAll(() => done());
 }
 
+/** Feed a sim match; with `consent`, its human seats are T2 accounts with research consent and a web client. */
 async function playAndConsent(index: number, flags: Parameters<typeof metaFor>[2], consent: boolean) {
   const r = simMatch(index);
+  if (consent)
+    for (const seat of r.config.seats.filter((x) => !x.isAgent))
+      await makeAccount(sql, playerIdFor(index, seat.seatId), { trust: 'T2', research: true });
   const s = new PostgresStore(sql);
-  await feed(s, r, metaFor(r, index, flags));
+  await feed(s, r, metaFor(r, index, flags, consent ? 'T2' : 'T0'), { env: consent });
   await s.drain();
-  if (consent) {
-    for (const seat of r.config.seats.filter((x) => !x.isAgent)) {
-      await sql.query(`update players set trust_level = 'T2', research_opt_in = true where player_id = $1`, [
-        playerIdFor(index, seat.seatId),
-      ]);
-    }
-  }
   return r;
 }
 
@@ -72,13 +69,18 @@ describe('humanlikeness H (SPEC §Agents)', () => {
     while (!simMatch(idx).config.seats.some((s) => s.isAgent)) idx++;
     await playAndConsent(idx, ['phase4'], false);
     expect(await humanlikeness(sql)).toEqual([]);
-    // An eligible (non-party, unflagged) match with an agent seat.
-    let j = idx + 1;
+    // A non-dev match whose voters are guests: evaluation needs T2+ and research consent, so nothing counts.
+    let g = idx + 1;
+    while (!simMatch(g).config.seats.some((s) => s.isAgent)) g++;
+    await playAndConsent(g, [], false);
+    expect(await humanlikeness(sql)).toEqual([]);
+    // An eligible match: non-party, unflagged, voters are consented T2 accounts.
+    let j = g + 1;
     while (!simMatch(j).config.seats.some((s) => s.isAgent)) j++;
-    const r = await playAndConsent(j, [], false);
+    const r = await playAndConsent(j, [], true);
     const [row] = await humanlikeness(sql);
     expect(row!.agentVersion).toBe('scripted-0');
-    // Recompute from the log: human voters' non-blank labels.
+    // Recompute from the log: the consented human voters' non-blank labels.
     const isAgent = r.config.seats.map((s) => s.isAgent);
     let aL = 0,
       aH = 0,

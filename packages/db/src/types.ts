@@ -1,5 +1,13 @@
 import type { MatchInput } from '@canutell/engine';
-import type { DecisionKind, MatchConfig, MatchEvent, Mode, SeatId } from '@canutell/protocol';
+import type {
+  ClientEnv,
+  DecisionKind,
+  MatchConfig,
+  MatchEvent,
+  Mode,
+  SeatId,
+  TrustLevel,
+} from '@canutell/protocol';
 
 // The records a live match produces, and the store interface they are written through. Stores:
 // MemoryStore and JsonlStore (apps/server), PostgresStore (this package).
@@ -11,12 +19,13 @@ import type { DecisionKind, MatchConfig, MatchEvent, Mode, SeatId } from '@canut
 //   timings      — server-measured latency per decision (CLAUDE.md invariant 6) + untrusted client time
 //   connections  — connect/disconnect per seat, so a disconnect timeout can be told from an idle one
 //   rejections   — rejected actions (late, invalid), which are behavioral data too
+//   clientSignals — client-reported integrity signals (env, focus, blur), account holders' seats only
 
 export type MatchStatus = 'running' | 'completed' | 'aborted';
 
 /**
- * Data-quality flags. Every match before Phase 5 carries its build phase (`phase2`, `phase3`): dev data,
- * never research-eligible, purged before the closed alpha (DECISIONS "Guest data before accounts").
+ * Data-quality flags. Every match before the closed alpha carries its build phase (`phase2` … `phase5`): dev
+ * data, never research-eligible, purged before the alpha (DECISIONS "Guest data before accounts").
  * `scripted_agents`: agent seats are played by scripted bots, not trained agents.
  * `bot_fill`: some human seats were filled by bots (dev only).
  * `sped_up`: played on a clock faster than real time (tests, load tests).
@@ -29,6 +38,7 @@ export type MatchFlag =
   | 'phase2'
   | 'phase3'
   | 'phase4'
+  | 'phase5'
   | 'scripted_agents'
   | 'baseline_agents'
   | 'agent_fallback'
@@ -40,8 +50,13 @@ export type MatchFlag =
 export interface SeatOccupant {
   seat: SeatId;
   kind: 'human' | 'agent' | 'filler';
-  /** Pseudonymous player id for humans, a generated id for bots. Never personal data (invariant 9). */
+  /**
+   * Pseudonymous player id for humans, a generated id for bots. Never personal data (invariant 9). A guest's
+   * id is fresh for every match, so nothing links a guest's matches (DECISIONS "Guests and deleted accounts").
+   */
   playerId: string;
+  /** Humans: trust level when the match started (T0 for guests). Ignored for bots. Default T0. */
+  trustLevel?: TrustLevel;
 }
 
 export interface MatchMeta {
@@ -100,6 +115,21 @@ export interface AnnotationRecord {
   confidence: number;
 }
 
+/** Server-side additions to the client's env report (SPEC §Integrity). */
+export interface StoredClientEnv extends ClientEnv {
+  /** The WebSocket upgrade's user agent said HeadlessChrome (reduced to a boolean; the string is not kept). */
+  serverHeadlessUa: boolean;
+}
+
+/** A client-reported integrity signal with its server time. Account holders' seats only. */
+export interface ClientSignalRecord {
+  seat: SeatId;
+  at: number;
+  kind: 'env' | 'focus' | 'blur';
+  /** env only. */
+  value: StoredClientEnv | null;
+}
+
 export interface MatchStore {
   open(meta: MatchMeta): void;
   events(matchId: string, events: readonly MatchEvent[]): void;
@@ -108,6 +138,7 @@ export interface MatchStore {
   connection(matchId: string, record: ConnectionRecord): void;
   rejection(matchId: string, record: RejectionRecord): void;
   annotation(matchId: string, record: AnnotationRecord): void;
+  clientSignal(matchId: string, record: ClientSignalRecord): void;
   close(matchId: string, status: Exclude<MatchStatus, 'running'>, at: number): void;
   /** Flush and release resources. */
   shutdown(): Promise<void>;
@@ -121,4 +152,5 @@ export interface StoredMatch {
   connections: ConnectionRecord[];
   rejections: RejectionRecord[];
   annotations: AnnotationRecord[];
+  clientSignals: ClientSignalRecord[];
 }

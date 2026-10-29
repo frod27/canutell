@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { PGlite } from '@electric-sql/pglite';
 import { advancePhase, applyAction, createMatch, replay, type MatchState } from '@canutell/engine';
-import { decisionPromptKey, type MatchEvent } from '@canutell/protocol';
+import { decisionPromptKey, type MatchEvent, type TrustLevel } from '@canutell/protocol';
 import { runMatch, type SimMatchResult } from '@canutell/sim';
 import {
   migrate,
@@ -28,7 +28,8 @@ export async function freshDb(): Promise<{
     const name = `canutell_test_${randomBytes(6).toString('hex')}`;
     await admin.exec(`create database ${name}`);
     await admin.exec(
-      `do $$ begin if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon nologin; end if; end $$`,
+      `do $$ begin if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon nologin; end if;
+        exception when duplicate_object or unique_violation then null; end $$`,
     );
     const u = new URL(url);
     u.pathname = `/${name}`;
@@ -76,7 +77,12 @@ export function simMatch(index: number, mode: 'full' | 'quick' = 'quick'): SimMa
   return { ...r, config, events: again.events, state: again.state };
 }
 
-export function metaFor(r: SimMatchResult, index: number, flags: MatchMeta['flags'] = ['phase3']): MatchMeta {
+export function metaFor(
+  r: SimMatchResult,
+  index: number,
+  flags: MatchMeta['flags'] = ['phase3'],
+  trustLevel: TrustLevel = 'T0',
+): MatchMeta {
   return {
     matchId: r.config.matchId,
     mode: r.config.mode,
@@ -87,6 +93,7 @@ export function metaFor(r: SimMatchResult, index: number, flags: MatchMeta['flag
       seat: s.seatId,
       kind: s.isAgent ? ('agent' as const) : ('human' as const),
       playerId: s.isAgent ? `b_${index}_${s.seatId}` : playerIdFor(index, s.seatId),
+      ...(s.isAgent ? {} : { trustLevel }),
     })),
     flags,
     createdAt: 1_700_000_000_000,
@@ -121,9 +128,25 @@ export async function feed(
   store: MatchStore,
   r: SimMatchResult,
   meta: MatchMeta,
-  opts: { close?: boolean; upTo?: number } = {},
+  opts: { close?: boolean; upTo?: number; env?: boolean } = {},
 ): Promise<MatchState> {
   store.open(meta);
+  // A web client reports its environment once; scripted sim seats otherwise send no client signals.
+  if (opts.env)
+    for (const o of meta.occupants)
+      if (o.kind === 'human' && (o.trustLevel ?? 'T0') !== 'T0')
+        store.clientSignal(meta.matchId, {
+          seat: o.seat,
+          at: meta.createdAt,
+          kind: 'env',
+          value: {
+            webdriver: false,
+            headlessUserAgent: false,
+            noLanguages: false,
+            zeroOuterSize: false,
+            serverHeadlessUa: false,
+          },
+        });
   let state = createMatch(r.config, r.seed).state;
   const inputs = r.inputs.slice(0, opts.upTo ?? r.inputs.length);
   for (const input of inputs) {
@@ -138,4 +161,35 @@ export async function feed(
   if (opts.close ?? true)
     store.close(meta.matchId, state.phase === 'reveal' ? 'completed' : 'aborted', state.clock ?? 0);
   return state;
+}
+
+/**
+ * Make `playerId` an account holder directly in the database (no WebAuthn): identity row, trust level, terms
+ * consent, and optionally research consent. For tests only.
+ */
+export async function makeAccount(
+  sql: Sql,
+  playerId: string,
+  opts: { trust: TrustLevel; research: boolean; ageConfirmed?: boolean | null },
+): Promise<void> {
+  await sql.query('insert into players (player_id) values ($1) on conflict (player_id) do nothing', [
+    playerId,
+  ]);
+  await sql.query('update players set trust_level = $2 where player_id = $1', [playerId, opts.trust]);
+  const age = opts.ageConfirmed === undefined ? opts.trust >= 'T2' : opts.ageConfirmed;
+  await sql.query(
+    `insert into identity.identities (player_id, user_handle, verification_method, verified_at, age_confirmed,
+       age_method, age_answered_at)
+     values ($1, $2, 'passkey', now(), $3, $4, $5)`,
+    [playerId, randomBytes(32), age, age === null ? null : 'self_attested', age === null ? null : new Date()],
+  );
+  await sql.query(
+    `insert into consents (player_id, consent_type, version, granted_at) values ($1, 'terms', 1, now())`,
+    [playerId],
+  );
+  if (opts.research)
+    await sql.query(
+      `insert into consents (player_id, consent_type, version, granted_at) values ($1, 'research', 1, now())`,
+      [playerId],
+    );
 }

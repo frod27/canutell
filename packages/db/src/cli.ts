@@ -4,6 +4,7 @@ import { purgeMatchesWithFlag, rebuildAllDerived, rebuildDerived } from './queri
 import { pgSql } from './sql';
 import { exportLatencyModel } from './latency-model';
 import { humanlikeness } from './humanlikeness';
+import { AccountError, pendingReviews, restoreTrust, reviewSeat } from './accounts';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -13,10 +14,15 @@ import { dirname } from 'node:path';
 // pnpm db:purge --flag phase3 --yes    privacy deletion of every match carrying the flag
 // pnpm db:latency-model [--out FILE]   export the human response-time model for agents (aggregates only)
 // pnpm db:humanlikeness                H per agent version (SPEC §Agents), non-party research matches only
+// pnpm db:integrity pending            flagged account seats awaiting human review (no identity data)
+// pnpm db:integrity review --match ID --seat N --decision cleared|confirmed --reviewer NAME [--note TEXT]
+// pnpm db:integrity restore --player ID --level T1|T2|T3
 // All commands use DATABASE_URL.
 
 async function main(): Promise<number> {
-  const [command, ...rest] = process.argv.slice(2).filter((a) => a !== '--');
+  const [command, ...args] = process.argv.slice(2).filter((a) => a !== '--');
+  const sub = command === 'integrity' ? args[0] : undefined;
+  const rest = sub ? args.slice(1) : args;
   const { values } = parseArgs({
     args: rest,
     options: {
@@ -25,6 +31,12 @@ async function main(): Promise<number> {
       yes: { type: 'boolean', default: false },
       out: { type: 'string' },
       'min-samples': { type: 'string' },
+      seat: { type: 'string' },
+      decision: { type: 'string' },
+      reviewer: { type: 'string' },
+      note: { type: 'string' },
+      player: { type: 'string' },
+      level: { type: 'string' },
     },
   });
   const url = process.env.DATABASE_URL;
@@ -104,15 +116,77 @@ async function main(): Promise<number> {
         );
         return 0;
       }
+      case 'integrity':
+        try {
+          return await integrity(sql, sub, values);
+        } catch (e) {
+          if (e instanceof AccountError) {
+            console.error(`${e.code}: ${e.message}`);
+            return 1;
+          }
+          throw e;
+        }
       default:
         console.error(
-          'usage: db <migrate|status|derive|purge|latency-model|humanlikeness> [--match ID] [--flag F --yes] [--out FILE]',
+          'usage: db <migrate|status|derive|purge|latency-model|humanlikeness|integrity> [--match ID] [--flag F --yes] [--out FILE]',
         );
         return 2;
     }
   } finally {
     await sql.close();
   }
+}
+
+/** Human review of automation flags (SPEC §Integrity: flags never auto-ban without review). */
+async function integrity(
+  sql: ReturnType<typeof pgSql>,
+  sub: string | undefined,
+  v: Record<string, string | boolean | undefined>,
+): Promise<number> {
+  const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
+  if (sub === 'pending') {
+    const rows = await pendingReviews(sql);
+    for (const r of rows)
+      console.log(
+        `${r.matchId} seat ${r.seat}  ${new Date(r.matchCreatedAt).toISOString()}  ` +
+          r.signals.map((s) => `${s.signal}=${Math.round(s.value * 1000) / 1000}`).join(' '),
+      );
+    console.error(`${rows.length} seat(s) awaiting review`);
+    return 0;
+  }
+  if (sub === 'review') {
+    const decision = str('decision');
+    const match = str('match');
+    const seat = Number(str('seat'));
+    const reviewer = str('reviewer');
+    if (
+      !match ||
+      !Number.isInteger(seat) ||
+      !reviewer ||
+      (decision !== 'cleared' && decision !== 'confirmed')
+    ) {
+      console.error(
+        'usage: db integrity review --match ID --seat N --decision cleared|confirmed --reviewer NAME',
+      );
+      return 2;
+    }
+    await reviewSeat(sql, { matchId: match, seat, decision, reviewer, note: str('note'), now: Date.now() });
+    console.log(`recorded: ${match} seat ${seat} ${decision}`);
+    return 0;
+  }
+  if (sub === 'restore') {
+    const player = str('player');
+    const level = str('level');
+    if (!player || (level !== 'T1' && level !== 'T2' && level !== 'T3')) {
+      console.error('usage: db integrity restore --player ID --level T1|T2|T3');
+      return 2;
+    }
+    await restoreTrust(sql, { playerId: player, level, now: Date.now() });
+    console.log(`${player} is now ${level}`);
+    return 0;
+  }
+  console.error('usage: db integrity <pending|review|restore>');
+  return 2;
 }
 
 main().then(

@@ -1,9 +1,11 @@
 import { createMatch, type MatchInput } from '@canutell/engine';
 import type { MatchEvent } from '@canutell/protocol';
+import { applyMatchTrust } from './accounts';
 import { insertRows, iso, rebuildDerived } from './queries';
 import type { Sql } from './sql';
 import type {
   AnnotationRecord,
+  ClientSignalRecord,
   ConnectionRecord,
   MatchMeta,
   MatchStatus,
@@ -29,6 +31,7 @@ type Op =
   | { t: 'connection'; idx: number; r: ConnectionRecord }
   | { t: 'rejection'; idx: number; r: RejectionRecord }
   | { t: 'annotation'; r: AnnotationRecord }
+  | { t: 'clientSignal'; idx: number; r: ClientSignalRecord }
   | { t: 'close'; status: Exclude<MatchStatus, 'running'>; at: number };
 
 interface Lane {
@@ -39,6 +42,7 @@ interface Lane {
   inputs: number;
   connections: number;
   rejections: number;
+  signals: number;
 }
 
 export interface PostgresStoreOptions {
@@ -83,6 +87,7 @@ export class PostgresStore implements MatchStore {
         inputs: 0,
         connections: 0,
         rejections: 0,
+        signals: 0,
       };
       this.lanes.set(id, l);
     }
@@ -124,9 +129,10 @@ export class PostgresStore implements MatchStore {
         await new Promise((r) => setTimeout(r, this.retryDelays[attempt]));
       }
     }
-    // On close: derive the tables and flip the status in ONE transaction, so `completed` always means the
-    // derived rows (and therefore the reveal) exist. If derivation fails, the status is still recorded
-    // and the failure is reported; `pnpm db:derive` can rebuild later.
+    // On close: derive the tables, flip the status and apply the match to its players' trust in ONE
+    // transaction, so `completed` always means the derived rows (and therefore the reveal) exist. If that
+    // fails, the status is still recorded and the failure is reported; `pnpm db:derive` can rebuild later
+    // (trust is applied only here, once).
     const close = batch.find((o): o is Extract<Op, { t: 'close' }> => o.t === 'close');
     if (close) {
       const setStatus = (tx: Sql) =>
@@ -135,6 +141,7 @@ export class PostgresStore implements MatchStore {
         await this.sql.transaction(async (tx) => {
           await rebuildDerived(tx, id);
           await setStatus(tx);
+          await applyMatchTrust(tx, id, close.at);
         });
       } catch (e) {
         this.onError(id, e);
@@ -224,6 +231,19 @@ export class PostgresStore implements MatchStore {
             [id, op.r.seq, op.r.seat, op.r.confidence],
           );
           break;
+        case 'clientSignal':
+          await tx.query(
+            'insert into client_signals (match_id, idx, seat_id, at, kind, value) values ($1, $2, $3, $4::timestamptz, $5, $6::jsonb)',
+            [
+              id,
+              op.idx,
+              op.r.seat,
+              iso(op.r.at),
+              op.r.kind,
+              op.r.value === null ? null : JSON.stringify(op.r.value),
+            ],
+          );
+          break;
         case 'close':
           // The status flips together with derivation, after this batch commits (see flush).
           await tx.query(`update matches set ended_at = $2::timestamptz where match_id = $1`, [
@@ -283,8 +303,7 @@ export class PostgresStore implements MatchStore {
           player_id: o.kind === 'human' ? o.playerId : null,
           agent_version: cfg.agentVersion,
           is_agent: cfg.isAgent,
-          // Every player is a guest until Phase 5 accounts exist.
-          trust_level_at_match: o.kind === 'human' ? 'T0' : null,
+          trust_level_at_match: o.kind === 'human' ? (o.trustLevel ?? 'T0') : null,
         };
       }),
     );
@@ -310,6 +329,9 @@ export class PostgresStore implements MatchStore {
   }
   annotation(id: string, r: AnnotationRecord): void {
     this.push(id, { t: 'annotation', r });
+  }
+  clientSignal(id: string, r: ClientSignalRecord): void {
+    this.push(id, { t: 'clientSignal', idx: this.lane(id).signals++, r });
   }
   close(id: string, status: Exclude<MatchStatus, 'running'>, at: number): void {
     this.push(id, { t: 'close', status, at });

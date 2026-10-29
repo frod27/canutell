@@ -10,6 +10,7 @@ export {
   seatOfPlayer,
   stakesForSeat,
   purgeMatchesWithFlag,
+  integritySeats,
   type LoadedMatch,
   type StakeSummary,
 } from './queries';
@@ -24,3 +25,13 @@ export {
   type LatencyBucket,
 } from './latency-model';
 export { humanlikeness, type HumanlikenessRow } from './humanlikeness';
+export {
+  deriveIntegrity,
+  integrityApplies,
+  INTEGRITY_SIGNALS,
+  INTEGRITY_THRESHOLDS,
+  type IntegrityRow,
+  type IntegritySeat,
+  type IntegritySignal,
+} from './integrity';
+export * from './accounts';
