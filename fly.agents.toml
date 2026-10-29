@@ -14,8 +14,8 @@ primary_region = "mad"
   AGENT_PORT = "8790"
   AGENT_SERVER_URLS = "ws://canutell-server.internal:8787"
   AGENT_LOG_LEVEL = "INFO"
-  # Claude model for agent chat (DECISIONS "Chat model"); claude-haiku-5-5 is cheaper and faster.
-  AGENT_CHAT_MODEL = "claude-opus-5-5"
+  # Claude model for agent chat (DECISIONS "Chat model: Haiku 5.5").
+  AGENT_CHAT_MODEL = "claude-haiku-5-5"
 
 [checks]
   [checks.health]

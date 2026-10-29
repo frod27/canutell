@@ -36,7 +36,7 @@ pnpm agents:lint     # ruff format --check, ruff check, pyright
 | `AGENT_SERVICE_SECRET`      | required             | shared secret; the game server sends it as `x-agent-secret`                              |
 | `AGENT_SERVER_URLS`         | localhost only       | comma-separated game-server WebSocket URLs the service may connect to                    |
 | `AGENT_LATENCY_MODEL`       | `data/latency.json`  | human latency model from `pnpm db:latency-model --out services/agents/data/latency.json` |
-| `AGENT_CHAT_MODEL`          | `claude-opus-5-5`    | Claude model for chat; `claude-haiku-5-5` is cheaper and faster                          |
+| `AGENT_CHAT_MODEL`          | `claude-haiku-5-5`   | Claude model for chat (the owner's choice for the alpha)                                 |
 | `ANTHROPIC_API_KEY`         | unset                | without a credential, chat is scripted                                                   |
 | `AGENT_HOST` / `AGENT_PORT` | `127.0.0.1` / `8790` | listen address; port 0 picks a free port                                                 |
 

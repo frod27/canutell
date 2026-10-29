@@ -10,7 +10,7 @@ Configuration (environment):
     AGENT_SERVICE_SECRET   shared secret the game server sends (required)
     AGENT_SERVER_URLS      comma-separated allowed game-server WebSocket URLs (default: localhost only)
     AGENT_LATENCY_MODEL    path to the exported human latency model (default: data/latency.json)
-    AGENT_CHAT_MODEL       Claude model for chat (default claude-opus-5-5); needs ANTHROPIC_API_KEY or another
+    AGENT_CHAT_MODEL       Claude model for chat (default claude-haiku-5-5); needs ANTHROPIC_API_KEY or another
                            credential the Anthropic SDK resolves — without one, scripted chat is used
     AGENT_HOST / AGENT_PORT  listen address (default 127.0.0.1:8790; port 0 picks a free port)
 """

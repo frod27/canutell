@@ -37,7 +37,7 @@ command to run.
    ```
    - Edit `fly.server.toml`: set `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS` and `CORS_ORIGIN` to your web
      domain, `GAME_NIGHTS` to your schedule, and `primary_region` near your players.
-   - Edit `fly.agents.toml`: optionally set `AGENT_CHAT_MODEL` (`claude-haiku-5-5` is cheaper and faster).
+   - `fly.agents.toml` already sets `AGENT_CHAT_MODEL=claude-haiku-5-5`, the owner's choice for the alpha.
 6. **(owner) Secrets** (never in the toml files):
    ```sh
    SECRET=$(openssl rand -hex 32)

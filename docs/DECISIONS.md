@@ -462,7 +462,7 @@ questions:
     "human here").
   - The scripted line bank is tested against the same filter.
 
-### Chat model [engine, flagged for the owner]
+### Chat model [engine, flagged for the owner; superseded by "Chat model: Haiku 5.5"]
 
 - **Default model.** `claude-opus-5-5`, configurable with `AGENT_CHAT_MODEL`. The approved plan said "a
   fast Claude model" but named none. Anthropic's API guidance is to default to the current Opus unless a
@@ -851,6 +851,25 @@ questions:
 - **Suite:** 275 TypeScript tests pass on both PGlite and Postgres 16. The simulator ran 10,000 matches
   per mode with 0 invariant violations. 68 Python tests pass; ruff and pyright are clean.
 
+### Chat model: Haiku 5.5 [user]
+
+- **Question.** Agent chat defaulted to `claude-opus-5-5` (entry "Chat model", Phase 4), flagged as the
+  owner's call.
+- **Decision (2026-10-29).** The owner switched it to `claude-haiku-5-5`: the default in
+  `services/agents` and in `fly.agents.toml`. `AGENT_CHAT_MODEL` still overrides it.
+- **What changes in the request.**
+  - The Haiku path sends no server-side refusal fallback. Haiku 5.5 has none, and a `fallbacks` list
+    returns 400. A refusal stays silence, as before.
+  - Effort stays `low`. No sampling parameters or prefill are sent, both of which Haiku 5.5 rejects. A
+    test pins all of this.
+  - The static rules prompt (about 450 tokens) is below Haiku 5.5's 512-token minimum cacheable prefix,
+    so it isn't cached. That costs a little and changes nothing else.
+- **Data.** `baseline-1` keeps its label. Every match it played with Opus chat is dev data (`phase4`,
+  `phase5`), purged before the alpha, so no research data mixes the two chat models under one version.
+- **Open item, needs approval.** The `agent_versions` row for `baseline-1` (migration 0002) still
+  describes Opus as the chat model. Applied migrations are never edited, so correcting it takes a new
+  migration (proposed: 0005, one `update` of that row's `chat_model` text).
+
 ---
 
 ## Later
@@ -884,8 +903,8 @@ Noted while building Phase 1; out of scope for this phase.
   consent) as a database view in Phase 5, together with `consents`.
 - **Real human timing for agents.** Needs Phase 5 accounts and consent, then `pnpm db:latency-model`.
   The `latency_prior` flag disappears on its own once every bucket has 200+ samples.
-- **Choosing the chat model for the alpha** (Opus 5.5 vs Haiku 5.5), against a small eval of chat quality
-  and safety-filter drop rate.
+- **Evaluating agent chat on Haiku 5.5** against a small eval of chat quality and safety-filter drop
+  rate, before H comparisons rely on it.
 - **Mimic agents** (SPEC §Training loop): first gate is 2,000 verified-human matches and 500 distinct
   verified players.
 - **Measuring humanlikeness H** in the closed alpha (`pnpm db:humanlikeness`, non-party matches only).

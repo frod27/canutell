@@ -6,7 +6,15 @@ from typing import Any
 
 import pytest
 
-from canutell_agents.chat import SYSTEM_PROMPT, ChatRequest, LlmChat, ScriptedChat, asked_if_bot, describe_view
+from canutell_agents.chat import (
+    DEFAULT_MODEL,
+    SYSTEM_PROMPT,
+    ChatRequest,
+    LlmChat,
+    ScriptedChat,
+    asked_if_bot,
+    describe_view,
+)
 from canutell_agents.policy import Persona
 
 
@@ -74,6 +82,19 @@ async def test_llm_line_goes_through(views: list[dict[str, Any]]) -> None:
 async def test_haiku_gets_no_fallback_parameter(views: list[dict[str, Any]]) -> None:
     _, calls, _ = await compose(views, "gl all", model="claude-haiku-5-5")
     assert "fallbacks" not in calls[0] and "betas" not in calls[0]
+    assert calls[0]["output_config"] == {"effort": "low"}
+
+
+async def test_default_chat_model_is_haiku(views: list[dict[str, Any]]) -> None:
+    """The owner chose Haiku 5.5 for agent chat (DECISIONS "Chat model: Haiku 5.5")."""
+    assert DEFAULT_MODEL == "claude-haiku-5-5"
+    client = FakeClient(FakeResponse([FakeBlock("hi all")], "end_turn"))
+    await LlmChat(client).compose(a_view(views), PERSONA, ChatRequest("table", None, False))  # type: ignore[arg-type]
+    call = client.messages.calls[0]
+    assert call["model"] == "claude-haiku-5-5"
+    # Haiku 5.5 rejects a fallbacks list, sampling parameters and prefill: none are sent.
+    assert not {"fallbacks", "betas", "temperature", "top_p", "top_k"} & set(call)
+    assert call["messages"][-1]["role"] == "user"
 
 
 @pytest.mark.parametrize("text", ["NONE", "", "   "])

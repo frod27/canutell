@@ -25,7 +25,8 @@ from .safety import check
 
 log = logging.getLogger("canutell.agents.chat")
 
-DEFAULT_MODEL = "claude-opus-5-5"
+#: Owner's choice for the alpha (DECISIONS "Chat model: Haiku 5.5"); AGENT_CHAT_MODEL overrides it.
+DEFAULT_MODEL = "claude-haiku-5-5"
 ASKED_IF_BOT = re.compile(r"\b(bot|bots|ai|a\.i\.|robot|agent|human|real person|computer|chatgpt|claude)\b", re.I)
 
 
