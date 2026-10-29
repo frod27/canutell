@@ -164,8 +164,14 @@ export async function feed(
 }
 
 /**
+ * When `makeAccount` accounts were made: a fixed instant before every test's own clock, never the wall clock.
+ * (Using the database's now() made revocations at a test's fixed NOW land before the grant after noon UTC.)
+ */
+export const ACCOUNT_SETUP_AT = '2026-01-01T00:00:00.000Z';
+
+/**
  * Make `playerId` an account holder directly in the database (no WebAuthn): identity row, trust level, terms
- * consent, and optionally research consent. For tests only.
+ * consent, and optionally research consent, all dated ACCOUNT_SETUP_AT. For tests only.
  */
 export async function makeAccount(
   sql: Sql,
@@ -180,16 +186,24 @@ export async function makeAccount(
   await sql.query(
     `insert into identity.identities (player_id, user_handle, verification_method, verified_at, age_confirmed,
        age_method, age_answered_at)
-     values ($1, $2, 'passkey', now(), $3, $4, $5)`,
-    [playerId, randomBytes(32), age, age === null ? null : 'self_attested', age === null ? null : new Date()],
+     values ($1, $2, 'passkey', $6::timestamptz, $3, $4, $5::timestamptz)`,
+    [
+      playerId,
+      randomBytes(32),
+      age,
+      age === null ? null : 'self_attested',
+      age === null ? null : ACCOUNT_SETUP_AT,
+      ACCOUNT_SETUP_AT,
+    ],
   );
   await sql.query(
-    `insert into consents (player_id, consent_type, version, granted_at) values ($1, 'terms', 1, now())`,
-    [playerId],
+    `insert into consents (player_id, consent_type, version, granted_at) values ($1, 'terms', 1, $2::timestamptz)`,
+    [playerId, ACCOUNT_SETUP_AT],
   );
   if (opts.research)
     await sql.query(
-      `insert into consents (player_id, consent_type, version, granted_at) values ($1, 'research', 1, now())`,
-      [playerId],
+      `insert into consents (player_id, consent_type, version, granted_at)
+       values ($1, 'research', 1, $2::timestamptz)`,
+      [playerId, ACCOUNT_SETUP_AT],
     );
 }
