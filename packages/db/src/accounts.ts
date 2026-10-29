@@ -8,6 +8,7 @@ import {
   type TrustLevel,
 } from '@canutell/protocol';
 import { EXCLUDED_FLAGS } from './latency-model';
+import { redeemInvite } from './invites';
 import { iso } from './queries';
 import type { Sql } from './sql';
 
@@ -30,7 +31,10 @@ export class AccountError extends Error {
       | 'last_passkey'
       | 'not_flagged'
       | 'not_reviewable'
-      | 'bad_level',
+      | 'bad_level'
+      | 'invalid_invite'
+      | 'already_answered'
+      | 'not_completed',
     message: string,
   ) {
     super(message);
@@ -84,18 +88,28 @@ async function setTrust(
  */
 export async function createAccount(
   sql: Sql,
-  a: { userHandle: Uint8Array; passkey: PasskeyRecord; termsVersion: number; now: number },
+  a: {
+    userHandle: Uint8Array;
+    passkey: PasskeyRecord;
+    termsVersion: number;
+    now: number;
+    /** Closed alpha: an invite code, redeemed in the same transaction (DECISIONS Phase 6). */
+    invite?: string;
+  },
 ): Promise<string> {
   const playerId = `p_${randomUUID()}`;
   await sql.transaction(async (tx) => {
+    const inviteId = a.invite === undefined ? null : await redeemInvite(tx, a.invite, a.now);
+    if (a.invite !== undefined && inviteId === null)
+      throw new AccountError('invalid_invite', 'that invite code is not valid');
     await tx.query(`insert into players (player_id, created_at) values ($1, $2::timestamptz)`, [
       playerId,
       iso(a.now),
     ]);
     await tx.query(
-      `insert into identity.identities (player_id, user_handle, verification_method, verified_at)
-       values ($1, $2, 'passkey', $3::timestamptz)`,
-      [playerId, Buffer.from(a.userHandle), iso(a.now)],
+      `insert into identity.identities (player_id, user_handle, verification_method, verified_at, invite_id)
+       values ($1, $2, 'passkey', $3::timestamptz, $4)`,
+      [playerId, Buffer.from(a.userHandle), iso(a.now), inviteId],
     );
     await insertPasskey(tx, playerId, a.passkey, a.now);
     await tx.query(
@@ -337,7 +351,8 @@ export async function setConsent(
 // ---------- deletion (DECISIONS "Guests and deleted accounts") ----------
 
 /**
- * Erases identity, passkeys and sessions, revokes every consent, and removes the player's integrity data.
+ * Erases identity, passkeys and sessions, revokes every consent, and removes the player's integrity data and
+ * post-match survey answers.
  * Their past seats stay in the match logs only as anonymous context, never exported, like a guest's.
  */
 export async function deleteAccount(sql: Sql, playerId: string, now: number): Promise<void> {
@@ -353,7 +368,7 @@ export async function deleteAccount(sql: Sql, playerId: string, now: number): Pr
       'update consents set revoked_at = $2::timestamptz where player_id = $1 and revoked_at is null',
       [playerId, iso(now)],
     );
-    for (const t of ['client_signals', 'integrity_signals'])
+    for (const t of ['client_signals', 'integrity_signals', 'match_feedback'])
       await tx.query(
         `delete from ${t} x using seats s
           where s.match_id = x.match_id and s.seat_id = x.seat_id and s.player_id = $1`,

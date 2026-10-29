@@ -7,10 +7,10 @@ import type { Sql } from './sql';
 // schema_migrations. Every schema change is a new numbered file (CLAUDE.md); applied files are never
 // edited. The Supabase CLI can apply the same files.
 
-export const MIGRATIONS_DIR = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  '../../../supabase/migrations',
-);
+/** The repo's migrations, or CANUTELL_MIGRATIONS_DIR (bundled deployments copy them next to the bundle). */
+export const MIGRATIONS_DIR =
+  process.env.CANUTELL_MIGRATIONS_DIR ??
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../../supabase/migrations');
 
 export interface Migration {
   version: string;

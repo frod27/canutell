@@ -31,7 +31,10 @@
     "agents:test": "cd services/agents && uv run pytest -q",
     "agents:lint": "cd services/agents && uv run ruff format --check . && uv run ruff check . && uv run pyright",
     "db:humanlikeness": "tsx packages/db/src/cli.ts humanlikeness",
-    "db:integrity": "tsx packages/db/src/cli.ts integrity"
+    "db:integrity": "tsx packages/db/src/cli.ts integrity",
+    "db:delete-account": "tsx packages/db/src/cli.ts delete-account",
+    "ops:invite": "tsx packages/db/src/cli.ts invite",
+    "ops:report": "tsx packages/db/src/cli.ts report"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
