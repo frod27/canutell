@@ -124,12 +124,21 @@ Agents trained here are never deployed outside CANUTELL.
 
 | Level | Requirement | Data use |
 | --- | --- | --- |
-| T3 | T2 plus 10+ matches with no automation flags | Training, evaluation, research |
-| T2 | Account, passkey or phone verification, confirmed 18+ | Training, evaluation |
+| T3 | T2 plus its last 10 completed non-dev matches at T2+ with no automation flags | Training, evaluation, research |
+| T2 | Account, passkey or phone verification, confirmed 18+ (self-attested birth month and year; only the yes/no is stored) | Training, evaluation |
 | T1 | Signed-in account | Play only |
-| T0 | Guest | Play only; nothing kept beyond the match |
+| T0 | Guest | Play only; nothing about the person kept beyond the match (see below) |
 
-- **Automation signals,** logged per seat: input timing variance, paste events in chat, tab focus and blur, headless-browser fingerprints, and replies faster than reading time. Flags lower trust; they never auto-ban without review.
+- **Data uses.** Every use needs active research consent at the time of use:
+
+  | Use | Needs |
+  | --- | --- |
+  | Training (Mimic, agent timing) | T2+ at match time and now, active research consent |
+  | Evaluation (H, detection metrics) | Voters who are T2+ with active research consent |
+  | Research (other behavioral analyses) | T3, active research consent |
+
+- **T0 guests: nothing about the person is kept.** A guest seat is stored under a pseudonym that is new for each match, with no signals and no identity. Its actions stay in the match log only as context for the other seats' views, so their decisions remain replayable. A guest seat is never a training or evaluation target, and training exports replace chat text from any seat outside the training pool with a placeholder. A deleted account is treated the same way, after its identity, passkeys and sessions are erased.
+- **Automation signals,** logged per seat: input timing variance, paste events in chat, tab focus and blur, headless-browser fingerprints, and replies faster than reading time. Fingerprints are reduced to booleans; no raw fingerprint is stored. Flags lower trust by one level at once; a human reviewer clears (restoring the level) or confirms (T1). They never auto-ban, and play is never affected.
 - **Party queues** are allowed and tagged with `is_party`.
 
 ## Data schema

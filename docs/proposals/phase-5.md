@@ -1,7 +1,8 @@
 # Phase 5 proposal: accounts, trust levels, consent flows, integrity signals
 
-Status: **draft for approval.** Nothing is built yet. This needs approval of the plan, of migration 0003,
-and answers to the open questions at the end. The engine and the rules don't change in this phase.
+Status: **approved 2026-10-29.** Owner answers: the recommendation for every open question (own
+passkeys, self-attested birth month and year, keep the match and forget the person) and the plan and
+migration as written. Implementation notes are in DECISIONS.md under Phase 5.
 
 ## Goal
 

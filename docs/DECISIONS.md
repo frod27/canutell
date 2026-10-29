@@ -574,6 +574,159 @@ questions:
 
 ---
 
+## 2026-10-29 — Phase 5 (accounts, trust levels, consent flows, integrity signals)
+
+### Phase 5 plan and migration 0003 [user]
+
+- **Question.** The plan and migration 0003 in `docs/proposals/phase-5.md`, plus four open questions.
+- **Decision.** The owner approved the plan and migration as written, with every recommendation:
+  1. **Sign-in:** passkeys run by our own game server (SimpleWebAuthn), stored in our Postgres. No email
+     and no phone are collected.
+  2. **18+:** self-attested birth month and year. Only `age_confirmed` true or false is stored, never the
+     date.
+  3. **Guests and deleted accounts:** keep the match, forget the person (entry below).
+  4. **Data uses:** every use needs active research consent, evaluation included (entry below).
+- **Reason for 1.** There is no Supabase project yet. Supabase's passkeys are an experimental beta and
+  need an email- or phone-confirmed user first. Passkeys are bound to the web domain, not the provider,
+  so a later move can keep them.
+
+### Guests and deleted accounts [user, data tradeoff → data, with consent]
+
+- **The conflict.** SPEC §Integrity said T0 guests keep "nothing beyond the match", but a guest's actions
+  are part of every other seat's view. Deleting them would break replay, and with it the training value
+  of the other players in the same match.
+- **Decision.** Keep the match, forget the person:
+  - each guest seat is stored under a pseudonym that is new for each match;
+  - no signals and no identity are stored for a guest;
+  - the guest's actions stay only as context, never as a training or evaluation target;
+  - training exports replace chat text from any seat outside the pool with a placeholder;
+  - account deletion erases identity, passkeys and sessions, revokes consents, and then treats the
+    player's past seats like a guest's.
+- **Follow-up.** Done: SPEC §Integrity now says this. Their masked chat stays in the log, with no link to
+  any identity, and is never exported. This needs legal review before the alpha.
+
+### What each data use requires [user, resolves a SPEC ambiguity]
+
+- **The ambiguity.** SPEC's integrity table listed "research" as a T3 use, while §Consent calls the research
+  opt-in the gate for training.
+- **Decision.** Every use needs active research consent at the time of use:
+  - training: T2+ at match time and now;
+  - evaluation (H, detection metrics): only T2+ voters count;
+  - other behavioral research: T3.
+- **Trade-off.** Requiring consent for evaluation shrinks the H sample, but no ballots are analysed
+  without consent.
+- **Follow-up.** Done: SPEC §Integrity has the table.
+
+### Passkey sign-in [engine]
+
+- **Libraries.** `@simplewebauthn/server` 14.0.3 in the game server, `@simplewebauthn/browser` 14.0.0 in
+  the web client.
+- **Ceremonies.**
+  - Discoverable credentials, so sign-in needs no username; user verification is required.
+  - Attestation is `none`, so no authenticator model is collected.
+  - Each ceremony is a single-use flow held in memory for 5 minutes.
+  - A sign-in must also present the user handle the passkey was created for.
+- **Sessions.**
+  - `s_` plus 64 hex characters, valid 30 days. Only the SHA-256 is stored.
+  - Re-checked in the database on every `hello` and every request, so signing out or deleting an account
+    takes effect at once.
+  - Session tokens are never cached in the server's memory.
+- **Relying party.** `WEBAUTHN_RP_ID` (the web domain) and `WEBAUTHN_ORIGINS`. Accounts need the database;
+  without `DATABASE_URL` everyone plays as a guest.
+- **Account recovery.** Without email or phone there is none. A player who loses every passkey loses the
+  account. Synced passkeys (iCloud, Google) and "Add another passkey" are the mitigation (Later).
+
+### Trust levels in practice [engine]
+
+- **Trust at match time** is read from the database when the match forms, so a flag since sign-in counts.
+  If that read fails, account seats are stored as T0, which can only keep data out of the pool.
+- **A flag lowers trust by one level**, once per player and match.
+  - The change is applied in the same transaction that completes the match.
+  - `pnpm db:derive` never re-applies it.
+- **Review.**
+  - `pnpm db:integrity pending | review | restore`.
+  - Clearing restores the lowered level, if the player is still at it.
+  - Confirming sets T1.
+  - `restore` refuses T2+ without a confirmed 18+ answer.
+  - Reviewers see match, seat and signal values, never player ids.
+- **T3.** The player's last 10 completed non-dev matches at T2+ must all be clean, with cleared flags
+  counting as clean.
+- **Age.**
+  - In the month of the 18th birthday the day decides, so nothing is stored and the player is asked to
+    answer next month.
+  - An under-18 answer is final in the app, as approved.
+
+### Guest pseudonyms [engine]
+
+- **Storage.** A guest's in-memory identity (token, id) still lasts across matches on one connection, so a
+  reload resumes a seat. Each match stores the guest under a fresh `p_<uuid>`.
+- **Reveals.** The server keeps the mapping in memory only, so a guest can reopen a reveal from the same
+  device until a restart. Accounts reopen theirs anywhere.
+- **What the load test checks:** no stored guest id equals the id the guest's client knows, and none
+  repeats across matches.
+
+### Integrity signals in practice [engine, data tradeoff → data]
+
+- **Server-side, trustworthy:** `latency_cv` and `fast_replies`, from server-measured timings and server
+  timestamps.
+- **Client-reported, never trusted on their own:** pastes, focus and blur, and the env booleans. The server
+  adds its own `HeadlessChrome` user-agent check, reduced to a boolean.
+- **Per connection.** Env is reported once per connection and recorded when the seat attaches to a match,
+  so a reconnect is recorded too.
+- **Cap.** At most 500 signals per seat per match; a flood of frames is not more evidence.
+- **Two simplifications against the proposal:**
+  - `blur_ms` counts hidden time over the whole match, not only during prompts.
+  - `fast_replies` counts only replies to a message the seat hasn't already answered, to cut false
+    positives from parallel conversations.
+- **Bot and agent seats get the same rows** and never affect trust. In the load test every scripted client
+  that does not report an environment is flagged `no_client_signals`. The browser e2e test is flagged
+  `headless` (Playwright sets `navigator.webdriver`), which exercises the whole flag → lower → review →
+  restore loop.
+- **Known gap:** false-positive rates need real people. The thresholds are starting values, to be tuned
+  in the closed alpha.
+
+### Purge before the alpha [engine]
+
+- `pnpm db:purge --flag phase5 --yes` deletes those matches and the accounts that played only in them,
+  with their identity, consents and trust history.
+- Accounts that never sat in a purged match are kept.
+
+### Differences between migration 0003 and the approved proposal [engine, flagged for review]
+
+- **Race-safe role creation.** Creating the `canutell_export` role tolerates a concurrent duplicate. Roles
+  are cluster-wide, so parallel test databases raced on it. No schema difference.
+
+### Phase 5 acceptance results
+
+- **Load test:** `pnpm loadtest --matches 200 --mode both --store postgres --agents python` (local
+  Postgres 16, the Python agent service in every agent seat) passed with 0 violations over 400 matches:
+  - full mode: 26,458 decisions; 501 account seats and 501 guest seats;
+  - quick mode: 16,540 decisions; 504 account seats and 504 guest seats.
+- **Audited per match,** on top of the Phase 3 and 4 checks:
+  - every human seat's trust at match time equals the account's level (T0 for guests);
+  - guests are stored under a fresh pseudonym per match, never the id their client knows, and have no
+    signals or integrity rows;
+  - integrity rows exist exactly for account seats and bot/agent seats;
+  - every account seat without a client environment was flagged `no_client_signals`, and none that
+    reported one was (503 flagged account seats in all); no clean environment was flagged `headless`;
+  - each flagged T2 account dropped to T1, with exactly one `automation_flag` row (336 in all); T1
+    accounts stayed T1;
+  - `client_signals` in the database equal the server's log;
+  - the training pool is empty, because every match is `phase5`;
+  - no frame carries account data except the player's own welcome.
+- **Browser e2e** (`apps/web/e2e/accounts.mjs`, real passkeys through Chromium's virtual authenticator):
+  19 of 19 checks pass:
+  - sign-up through terms, passkey, age and research consent stores no email, phone or birth date;
+  - the automated browser was flagged `headless` and dropped T2 → T1, out of the pool;
+  - after a server restart, signing in on a second device reopened the reveal;
+  - a reviewer cleared the flag (T2 again), consent was turned off (revoked, not erased), and deleting
+    the account erased its identity and signed out the other device.
+- **Suite:** 262 TypeScript tests pass on both PGlite and Postgres 16. The simulator ran 10,000 matches
+  per mode with 0 invariant violations (the engine is unchanged). 68 Python tests pass; ruff and pyright
+  are clean.
+
+---
+
 ## Later
 
 Noted while building Phase 1; out of scope for this phase.
@@ -610,3 +763,13 @@ Noted while building Phase 1; out of scope for this phase.
 - **Mimic agents** (SPEC §Training loop): first gate is 2,000 verified-human matches and 500 distinct
   verified players.
 - **Measuring humanlikeness H** in the closed alpha (`pnpm db:humanlikeness`, non-party matches only).
+- **Training export with chat redaction.** SPEC now says exports replace chat from seats outside the pool
+  with a placeholder. No exporter exists yet; the first one must implement that, reading only
+  `training_seats` / `training_decisions` through the `canutell_export` role.
+- **Phone verification** (SPEC T2 alternative). It needs an SMS provider and stores a phone number in
+  `identities` only.
+- **Account recovery** for players who lose every passkey (there is no email).
+- **Rate limiting** of `/api/auth/*` per client, beyond the in-memory flow cap.
+- **A reviewer UI** for flagged seats (today: `pnpm db:integrity`).
+- **Tuning integrity thresholds** against labelled alpha data, and measuring false positives.
+- **Re-asking age** when an under-18 account has since turned 18 (a support process; the app can't verify).
