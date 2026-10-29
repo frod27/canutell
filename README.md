@@ -67,7 +67,7 @@ TEST_DATABASE_URL=postgres://... pnpm test   # run DB tests on real Postgres (de
 | `apps/server`         | built   | server-authoritative game server: matchmaking, timers, latency, logs; passkey accounts API       |
 | `apps/web`            | minimal | Next.js 15 client: lobby, every prompt, chat, reveal, sign-up/sign-in, account; installable      |
 | `sim/`                | built   | headless simulator and the independent log audit                                                 |
-| `supabase/migrations` | built   | SQL migrations: `0001` log, `0002` agents, `0003` accounts/integrity, `0004` alpha               |
+| `supabase/migrations` | built   | SQL migrations: `0001` log, `0002` agents, `0003` accounts/integrity, `0004` alpha, `0005` chat  |
 | `services/agents`     | built   | Python agent service: `baseline-1` plays agent seats over the public protocol                    |
 | deployment            | built   | `apps/server/Dockerfile`, `services/agents/Dockerfile`, `fly.*.toml`, `.github/workflows/ci.yml` |
 

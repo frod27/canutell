@@ -22,7 +22,7 @@ command to run.
    - From your machine, run:
      ```sh
      export DATABASE_URL='postgres://…?sslmode=require'
-     pnpm db:migrate && pnpm db:status          # 0001–0004 applied
+     pnpm db:migrate && pnpm db:status          # 0001–0005 applied
      ```
    - The server connects as the database owner. Every table has row-level security with no policies,
      and the `anon` and `authenticated` roles are revoked, so Supabase's public API exposes nothing.

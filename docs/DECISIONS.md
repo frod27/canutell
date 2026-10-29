@@ -866,9 +866,10 @@ questions:
     so it isn't cached. That costs a little and changes nothing else.
 - **Data.** `baseline-1` keeps its label. Every match it played with Opus chat is dev data (`phase4`,
   `phase5`), purged before the alpha, so no research data mixes the two chat models under one version.
-- **Open item, needs approval.** The `agent_versions` row for `baseline-1` (migration 0002) still
-  describes Opus as the chat model. Applied migrations are never edited, so correcting it takes a new
-  migration (proposed: 0005, one `update` of that row's `chat_model` text).
+- **Agent version record [user].** The `agent_versions` row for `baseline-1` (migration 0002) still
+  described Opus. Applied migrations are never edited, so the owner approved migration 0005: one
+  `update` of that row's `chat_model` text. It now names Haiku 5.5 as the default and notes that Opus
+  was used before 2026-10-29, for dev data only.
 
 ---
 

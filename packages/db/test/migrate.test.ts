@@ -55,6 +55,13 @@ describe('migrations', () => {
     vs.forEach((v, i) => expect(v).toBe(i + 1));
   });
 
+  it('describes baseline-1 as chatting on Claude Haiku 5.5 (0005)', async () => {
+    const [row] = await sql.query<{ chat_model: string }>(
+      `select chat_model from agent_versions where agent_version = 'baseline-1'`,
+    );
+    expect(row!.chat_model).toMatch(/^claude-haiku-5-5 by default/);
+  });
+
   it('seeds the scripted-0 agent version', async () => {
     const rows = await sql.query('select agent_version, class from agent_versions');
     expect(rows).toContainEqual({ agent_version: 'scripted-0', class: 'scripted' });
