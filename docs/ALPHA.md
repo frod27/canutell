@@ -54,9 +54,14 @@ command to run.
    fly scale count 1 --app canutell-server   # matches live in memory: exactly one machine
    fly certs add api.canutell.com --app canutell-server   # prints the DNS records to create for `api`
    ```
-8. **(owner) Web on Vercel.**
-   - Import the repo with root directory `apps/web`; Vercel uses the root `pnpm-lock.yaml`.
-   - Set `NEXT_PUBLIC_SERVER_URL=wss://api.canutell.com`.
+8. **(owner) Web on Vercel.** `vercel.json` at the repo root defines one service, `web` (`apps/web`,
+   Next.js), public on every path. The game server and the agent service are not Vercel services: they
+   hold long-lived WebSockets and in-memory matches, so they stay on Fly (DECISIONS "Vercel hosts the web
+   app only").
+   - Import the repo as a project, with the repo root as its root directory. `vercel.json` points the
+     `web` service at `apps/web` and installs with pnpm from the root lockfile.
+   - Set `NEXT_PUBLIC_SERVER_URL=wss://api.canutell.com` for Production. The build refuses to run without
+     it.
    - Add the custom domains `canutell.com` and `www.canutell.com`, with `www` redirecting to the apex.
      Create the DNS records Vercel shows for each.
    - **Keep the apex as the only origin.** Passkey sign-in works only on `https://canutell.com`; a page

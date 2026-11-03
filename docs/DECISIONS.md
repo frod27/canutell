@@ -883,6 +883,25 @@ questions:
   from the exact origins listed. With one canonical origin there is exactly one place to sign in, and
   `www` cannot drift into a second, broken one.
 
+### Vercel hosts the web app only [user]
+
+- **Question.** Deploy the repo on Vercel as a project with multiple services (web, game server, agent
+  service)?
+- **Facts (Vercel docs, 2026-11-03).** Services run on Vercel Functions: a maximum duration of 300 s
+  on Hobby and 800 s on Pro, and scaling out to many instances. Long-running always-on work is what
+  Daemons are for, and those are in public beta.
+- **Why the server can't be one.**
+  - A match lasts 7–12 minutes and lives in one process's memory, with its timers and every seat's
+    WebSocket.
+  - The agent service holds a WebSocket open for the whole match.
+  - CLAUDE.md requires "a host that supports persistent processes, not serverless functions".
+- **Decision.** The owner kept the game server and the agent service on Fly. `vercel.json` defines one
+  public service, `web` (`apps/web`, Next.js, all paths). No `/api` rewrite and no bindings: the browser
+  reaches the game server at `NEXT_PUBLIC_SERVER_URL=wss://api.canutell.com`, and the server and agents
+  talk over Fly's private network.
+- **Guard.** A Vercel production build fails if `NEXT_PUBLIC_SERVER_URL` is unset. The dev fallback
+  (port 8787 on the page's host) would otherwise ship silently.
+
 ---
 
 ## Later
