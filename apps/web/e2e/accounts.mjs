@@ -28,10 +28,10 @@ const check = (name, ok, detail = '') => {
 };
 const q = (sql) => execFileSync('psql', [DB, '-Atc', sql], { encoding: 'utf8' }).trim();
 
-function start(cmd, args, env, ready) {
+function start(cmd, args, env, ready, cwd = ROOT) {
   // Own process group, so stopping also stops grandchildren (pnpm → next-server).
   const child = spawn(cmd, args, {
-    cwd: ROOT,
+    cwd,
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
@@ -56,6 +56,7 @@ const stop = (child) =>
     child.once('exit', r);
     process.kill(-child.pid, 'SIGTERM');
   });
+const AGENT_SECRET = 'e2e-agent-secret-0123456789';
 const serverEnv = {
   DATABASE_URL: DB,
   PORT: '8787',
@@ -67,6 +68,11 @@ const serverEnv = {
   ACCOUNTS_ONLY: '1',
   INVITES_REQUIRED: '1',
   GAME_NIGHTS: 'Mon,Tue,Wed,Thu,Fri,Sat,Sun 20:00-22:00 Europe/Madrid',
+  // Agent Studio (Phase 7): the real Python agent service plays agent seats, Studio agents included.
+  STUDIO: '1',
+  AGENT_SERVICE_URL: 'http://127.0.0.1:8790',
+  AGENT_SERVICE_SECRET: AGENT_SECRET,
+  AGENT_CALLBACK_URL: 'ws://127.0.0.1:8787',
 };
 const startServer = () =>
   start(join(ROOT, 'node_modules/.bin/tsx'), ['apps/server/src/main.ts'], serverEnv, /listening on/);
@@ -76,6 +82,13 @@ execFileSync(join(ROOT, 'node_modules/.bin/tsx'), ['packages/db/src/cli.ts', 'mi
   env: { ...process.env, DATABASE_URL: DB },
   stdio: 'inherit',
 });
+const agents = await start(
+  'uv',
+  ['run', '--quiet', 'python', '-m', 'canutell_agents'],
+  { AGENT_SERVICE_SECRET: AGENT_SECRET, AGENT_PORT: '8790', AGENT_SERVER_URLS: 'ws://127.0.0.1:8787' },
+  /AGENT_SERVICE_LISTENING/,
+  join(ROOT, 'services', 'agents'),
+);
 let server = await startServer();
 const web = await start(
   'pnpm',
@@ -116,7 +129,14 @@ try {
   await a.page.getByRole('heading', { name: 'Closed alpha' }).waitFor({ timeout: 15_000 });
   check(
     'signed-out visitors see the closed-alpha lobby with the game night',
-    await a.page.getByTestId('game-night').isVisible(),
+    // The schedule arrives by a separate request after the refusal, so wait for it rather than peek.
+    await a.page
+      .getByTestId('game-night')
+      .waitFor({ timeout: 10_000 })
+      .then(
+        () => true,
+        () => false,
+      ),
   );
   await shot(a.page, 'a0-closed-alpha');
   const invite = /: ([A-Z2-9-]{14})$/m.exec(
@@ -169,10 +189,32 @@ try {
     ),
   );
 
-  // ---------- play a quick match ----------
+  // ---------- Agent Studio: make an agent, then play with it in a private party (Phase 7) ----------
   await a.page.getByRole('link', { name: 'Play' }).click();
   await a.page.getByText(/Signed in · T2/).waitFor();
-  await a.page.getByRole('button', { name: /^Quick/ }).click();
+  await a.page.getByRole('link', { name: 'Agent Studio' }).click();
+  await a.page.getByRole('heading', { name: 'Agent Studio' }).waitFor();
+  await a.page.getByLabel('Agent name').fill('Jane Doe');
+  check(
+    'a person-like agent name is refused',
+    await a.page.getByRole('button', { name: 'Make agent' }).isDisabled(),
+  );
+  await a.page.getByLabel('Agent name').fill('Marlowe');
+  await a.page.getByLabel('Style hint').fill('dry humour, short sentences');
+  await a.page.getByLabel('I agree to the Studio terms').check();
+  await a.page.getByRole('button', { name: 'Make agent' }).click();
+  await a.page.getByTestId('agent-Marlowe').waitFor();
+  await shot(a.page, 'a2b-studio');
+  check(
+    'agent made at version 1 with the Studio terms recorded',
+    q(`select count(*) from agent_versions where agent_version like 'studio:%:v1'`) === '1' &&
+      q(`select count(*) from consents where consent_type = 'studio' and revoked_at is null`) === '1',
+  );
+  await a.page.getByRole('link', { name: '← Play' }).click();
+  await a.page.getByRole('button', { name: 'New quick party' }).click();
+  await a.page.getByRole('button', { name: 'Marlowe' }).click();
+  await a.page.getByTestId('party-agent').waitFor();
+  await a.page.getByRole('button', { name: 'Start' }).click();
   await a.page.getByText(/Round 1\/3/).waitFor({ timeout: 30_000 });
   const deadline = Date.now() + 150_000;
   while (Date.now() < deadline) {
@@ -185,6 +227,11 @@ try {
   }
   await a.page.getByRole('heading', { name: 'Reveal' }).waitFor({ timeout: 10_000 });
   await shot(a.page, 'a3-reveal');
+  await a.page.getByText(/made by a player/).waitFor({ timeout: 10_000 });
+  check(
+    'the Studio agent is revealed by name',
+    (await a.page.locator('main').innerText()).includes('Marlowe v1'),
+  );
   await a.page.getByRole('radio', { name: '4' }).click();
   await a.page.getByLabel('Great chat').check();
   await a.page.getByLabel('Comment').fill('loved it, write me at me@example.com');
@@ -195,6 +242,18 @@ try {
   const revealUrl = a.page.url();
   const matchId = revealUrl.split('/match/')[1];
   await a.page.waitForTimeout(500);
+  const flags = q(`select array_to_string(flags, ',') from matches where match_id = '${matchId}'`);
+  check(
+    'played with own agent: tagged owner_present and studio_agents',
+    /owner_present/.test(flags) && /studio_agents/.test(flags),
+    flags,
+  );
+  check(
+    'the Studio agent took a seat; the maker is out of the training pool',
+    q(`select count(*) from seats where match_id = '${matchId}' and agent_version like 'studio:%'`) === '1' &&
+      q(`select count(*) from training_seats where match_id = '${matchId}' and player_id = '${playerId}'`) ===
+        '0',
+  );
   const survey = q(
     `select fun || '|' || array_to_string(tags, ',') || '|' || comment from match_feedback where match_id = '${matchId}'`,
   );
@@ -345,6 +404,7 @@ try {
   await browser.close();
   await stop(server);
   await stop(web);
+  await stop(agents);
 }
 check('no page errors', errors.length === 0, errors.join('; '));
 console.log(

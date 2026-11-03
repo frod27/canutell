@@ -212,6 +212,8 @@ export function useGame() {
     joinParty: (code: string) => send({ type: 'party.join', code: code.toUpperCase() }),
     leaveParty: () => send({ type: 'party.leave' }),
     startParty: () => send({ type: 'party.start' }),
+    /** "Play with your agent": add (or remove, with null) one of your own Studio agents to your party. */
+    setPartyAgent: (agentId: number | null) => send({ type: 'party.agent', agentId }),
     act,
     leaveMatch: () => setState((s) => ({ ...s, match: null, view: null })),
     /** Say hello again after signing in or out, so the socket plays as the new identity. */

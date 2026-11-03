@@ -15,7 +15,7 @@ page.on('pageerror', (e) => errors.push(String(e)));
 const shot = async (name) => shots && page.screenshot({ path: `${shots}/${name}.png`, fullPage: true });
 
 await page.goto(url);
-await page.getByText('This match may contain AI players.').waitFor();
+await page.getByText(/^This match may contain AI players/).waitFor();
 await shot('1-lobby');
 await page.getByRole('button', { name: /^Quick/ }).click();
 await page.getByText(/Round 1\/3/).waitFor({ timeout: 20000 });

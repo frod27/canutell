@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { AI_DISCLOSURE, LONG_WAIT_HINT_MS, type GameNights, type Mode } from '@canutell/protocol';
 import type { useGame } from '@/lib/useGame';
+import { PartyAgent } from './PartyAgent';
 
 type Game = ReturnType<typeof useGame>;
 
@@ -73,6 +74,7 @@ export function Lobby({ game }: { game: Game }) {
           Share the code. A party needs at least 4 players; open seats are filled by AI.
         </p>
         <p className="disclosure">{p.disclosure}</p>
+        {state.account && <PartyAgent current={p.agent} onPick={game.setPartyAgent} />}
         <div className="row">
           {p.isHost && (
             <button disabled={!p.canStart} onClick={game.startParty}>
@@ -113,6 +115,8 @@ export function Lobby({ game }: { game: Game }) {
         Signed in · <strong>{state.account.trustLevel}</strong>
       </span>
       <Link href="/account">Account</Link>
+      <span className="muted">·</span>
+      <Link href="/studio">Agent Studio</Link>
     </p>
   ) : (
     <p className="account-bar">

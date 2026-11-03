@@ -1,7 +1,9 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import type { MatchRevealResponse, RevealView, SeatId } from '@canutell/protocol';
+import { studioNames } from '@/lib/studio';
 import { FunSurvey } from './FunSurvey';
 import { seatName } from './Match';
 
@@ -25,6 +27,13 @@ export function Reveal({ matchId, seat, reveal: r, myStakes, onDone }: RevealPro
   // One order everywhere (live and reopened): by round, then stake id.
   const stakes = [...myStakes].sort((a, b) => a.round - b.round || a.stakeId.localeCompare(b.stakeId));
   const me = r.seats[seat]!;
+  // Studio agents are revealed with their names (SPEC §Agents, Studio: "Agents are citizens").
+  const [names, setNames] = useState<Record<string, { name: string; versionNumber: number }>>({});
+  const versionKey = agents.map((a) => a.agentVersion ?? '').join(',');
+  useEffect(() => {
+    const versions = versionKey.split(',').filter(Boolean);
+    studioNames(versions).then(setNames, () => setNames({}));
+  }, [versionKey]);
 
   return (
     <>
@@ -75,7 +84,16 @@ export function Reveal({ matchId, seat, reveal: r, myStakes, onDone }: RevealPro
             <ul className="plain">
               {agents.map((a) => (
                 <li key={a.seatId}>
-                  {seatName(a.seatId)} — {a.agentVersion}, {a.finalScore} coins
+                  {seatName(a.seatId)} —{' '}
+                  {names[a.agentVersion ?? ''] ? (
+                    <>
+                      <strong>{names[a.agentVersion ?? '']!.name}</strong> v
+                      {names[a.agentVersion ?? '']!.versionNumber}, made by a player
+                    </>
+                  ) : (
+                    a.agentVersion
+                  )}
+                  , {a.finalScore} coins
                   {a.exiledRound !== null && <span className="tag">exiled r{a.exiledRound}</span>}
                 </li>
               ))}
