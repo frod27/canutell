@@ -518,7 +518,9 @@ export async function purgeMatchesWithFlag(
       await tx.query<{ player_id: string }>(
         `select p.player_id from players p
           where p.player_id = any($1::text[])
-            and not exists (select 1 from seats s where s.player_id = p.player_id)`,
+            and not exists (select 1 from seats s where s.player_id = p.player_id)
+            -- A Studio maker stays: their agents' versions are referenced by seats in other matches.
+            and not exists (select 1 from studio_agents sa where sa.owner_id = p.player_id)`,
         [sat.map((r) => r.player_id)],
       )
     ).map((r) => r.player_id);

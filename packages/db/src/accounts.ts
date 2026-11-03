@@ -374,6 +374,11 @@ export async function deleteAccount(sql: Sql, playerId: string, now: number): Pr
           where s.match_id = x.match_id and s.seat_id = x.seat_id and s.player_id = $1`,
         [playerId],
       );
+    // Studio agents of a deleted maker are retired (SPEC §Agents, Studio). Their versions stay: seats use them.
+    await tx.query(
+      `update studio_agents set status = 'retired' where owner_id = $1 and status <> 'retired'`,
+      [playerId],
+    );
     await tx.query('update players set deleted_at = $2::timestamptz where player_id = $1', [
       playerId,
       iso(now),

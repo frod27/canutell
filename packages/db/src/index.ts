@@ -38,3 +38,4 @@ export * from './accounts';
 export * from './invites';
 export { submitFeedback } from './feedback';
 export { opsReport, formatOpsReport, type OpsReport } from './ops-report';
+export * from './studio';

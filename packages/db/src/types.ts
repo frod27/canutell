@@ -26,6 +26,9 @@ export type MatchStatus = 'running' | 'completed' | 'aborted';
 /**
  * Data-quality flags. Every match before the closed alpha carries its build phase (`phase2` … `phase5`): dev
  * data, never research-eligible, purged before the alpha (DECISIONS "Guest data before accounts").
+ * `studio_agents`: at least one seat was played by a player-made Studio agent (Phase 7).
+ * `owner_present`: a maker played with their own Studio agent (private party): out of detection metrics and
+ *   H, and the maker's seat is out of the training pool (SPEC §Agents, Studio).
  * `alpha`: a closed-alpha match. A cohort label, not an exclusion: alpha matches are research-eligible.
  * `scripted_agents`: agent seats are played by scripted bots, not trained agents.
  * `bot_fill`: some human seats were filled by bots (dev only).
@@ -41,6 +44,8 @@ export type MatchFlag =
   | 'phase4'
   | 'phase5'
   | 'alpha'
+  | 'studio_agents'
+  | 'owner_present'
   | 'scripted_agents'
   | 'baseline_agents'
   | 'agent_fallback'
