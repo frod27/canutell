@@ -16,9 +16,10 @@ primary_region = "mad"
   INVITES_REQUIRED = "1"
   ALPHA = "1"
   GAME_NIGHTS = "Tue,Thu,Sun 20:00-22:00 Europe/Madrid"
-  WEBAUTHN_RP_ID = "canutell.example"
-  WEBAUTHN_ORIGINS = "https://canutell.example"
-  CORS_ORIGIN = "https://canutell.example"
+  # canutell.com is the one web origin (www redirects to it); passkeys are bound to this domain for good.
+  WEBAUTHN_RP_ID = "canutell.com"
+  WEBAUTHN_ORIGINS = "https://canutell.com"
+  CORS_ORIGIN = "https://canutell.com"
   AGENT_SERVICE_URL = "http://canutell-agents.internal:8790"
   AGENT_CALLBACK_URL = "ws://canutell-server.internal:8787"
 

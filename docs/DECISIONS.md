@@ -871,6 +871,18 @@ questions:
   `update` of that row's `chat_model` text. It now names Haiku 5.5 as the default and notes that Opus
   was used before 2026-10-29, for dev data only.
 
+### Domain: canutell.com [user + engine]
+
+- **Decision (2026-11-03).** The owner bought `canutell.com`.
+- **Layout [engine, the conventional default].**
+  - `https://canutell.com` is the single web origin; `www` redirects to it.
+  - The game server is `api.canutell.com`.
+  - `fly.server.toml` sets `WEBAUTHN_RP_ID=canutell.com`, `WEBAUTHN_ORIGINS=https://canutell.com` and
+    `CORS_ORIGIN=https://canutell.com`.
+- **Why one origin.** Passkeys are bound to the domain for good, and the server accepts ceremonies only
+  from the exact origins listed. With one canonical origin there is exactly one place to sign in, and
+  `www` cannot drift into a second, broken one.
+
 ---
 
 ## Later

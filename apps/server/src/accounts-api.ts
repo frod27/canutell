@@ -80,10 +80,10 @@ export interface PasskeyCeremonies {
 }
 
 export interface WebAuthnConfig {
-  /** Relying-party ID: the web client's registrable domain, e.g. `canutell.app` (`localhost` in dev). */
+  /** Relying-party ID: the web client's registrable domain, e.g. `canutell.com` (`localhost` in dev). */
   rpId: string;
   rpName?: string;
-  /** Exact web origins allowed to run ceremonies, e.g. `https://canutell.app`. */
+  /** Exact web origins allowed to run ceremonies, e.g. `https://canutell.com`. */
   origins: string[];
 }
 

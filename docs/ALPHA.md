@@ -12,10 +12,12 @@ command to run.
    `packages/protocol/src/consent.ts`. If the wording changes, edit the `.ts` file and run
    `pnpm consent:docs`. A change in meaning needs a new version (DECISIONS "Phase 5": raise
    `CONSENT_VERSIONS`, plus a migration for the research version).
-2. **(owner) Domain.**
-   - Pick the web domain, e.g. `canutell.app`, and an API host, e.g. `api.canutell.app`.
-   - **Passkeys are bound to the web domain.** Changing it later signs everyone out for good, so choose
-     once.
+2. **(owner) Domain: done, `canutell.com`.**
+   - **Web:** `https://canutell.com` is the one origin; `www.canutell.com` redirects to it.
+   - **API (game server):** `api.canutell.com`.
+   - **Passkeys are bound to `canutell.com`** for good. Changing the domain later would lock everyone
+     out of their accounts.
+   - `fly.server.toml` is already set up for this (`WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`, `CORS_ORIGIN`).
 3. **(owner) Supabase project.**
    - Create the project.
    - Copy the **direct connection** or **session pooler** connection string; add `?sslmode=require`.
@@ -50,15 +52,19 @@ command to run.
    fly deploy --config fly.agents.toml
    fly deploy --config fly.server.toml
    fly scale count 1 --app canutell-server   # matches live in memory: exactly one machine
-   fly certs add api.canutell.app --app canutell-server   # then point the DNS record at Fly
+   fly certs add api.canutell.com --app canutell-server   # prints the DNS records to create for `api`
    ```
 8. **(owner) Web on Vercel.**
    - Import the repo with root directory `apps/web`; Vercel uses the root `pnpm-lock.yaml`.
-   - Set `NEXT_PUBLIC_SERVER_URL=wss://api.canutell.app`.
-   - Add the custom domain `canutell.app`.
+   - Set `NEXT_PUBLIC_SERVER_URL=wss://api.canutell.com`.
+   - Add the custom domains `canutell.com` and `www.canutell.com`, with `www` redirecting to the apex.
+     Create the DNS records Vercel shows for each.
+   - **Keep the apex as the only origin.** Passkey sign-in works only on `https://canutell.com`; a page
+     served on `www` without redirecting would fail sign-in.
 9. **Smoke test production:**
-   - `curl https://api.canutell.app/health` returns `{"ok":true,…}`.
-   - `curl https://api.canutell.app/api/game-nights` returns the next windows.
+   - `curl https://api.canutell.com/health` returns `{"ok":true,…}`.
+   - `curl https://api.canutell.com/api/game-nights` returns the next windows.
+   - `https://www.canutell.com` redirects to `https://canutell.com`.
    - On a phone: open the site and see "Closed alpha".
    - Sign up with a test invite and play a match with 3 friends during a game night.
    - Then delete the test account from its account page.
