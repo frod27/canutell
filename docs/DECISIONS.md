@@ -956,3 +956,20 @@ Noted while building Phase 1; out of scope for this phase.
 - **Error alerting** on `DB WRITE FAILED` and on aborted matches, beyond `fly logs`.
 - **An ops dashboard page,** if `pnpm ops:report` proves too slow to read weekly.
 - **Storing queue waits,** if the alpha shows they matter (they are in the logs today).
+- **Player-built agents ("bring your own agent"), owner idea 2026-11-03.** Players connect their own
+  agents through the public protocol, either to play with them or to send them to play against others.
+  It needs its own proposal before any build. Open design points:
+  - **Chat leaves the platform.** Human chat would reach third-party servers in real time. That needs a
+    new consent version and a player opt-in.
+  - **Safety checks move to our server.** The checks on agent chat (no posing as a real person, no
+    requests for personal data, no off-platform invites) are enforced today inside our own agent
+    service, and the human-timing rule likewise. For outside agents both must be enforced on the
+    server.
+  - **An owner knows which seat is their agent.** Any match the owner, their party or their invite
+    group plays in leaks that role. Those matches must be tagged, like parties, and kept out of
+    detection metrics.
+  - **An "agent" seat might secretly be a human.** Outside agents' detection data must be kept
+    separate, with H computed per agent class.
+  - **Outside agents' own seats never enter the training pool** (CLAUDE.md invariant 10). The humans'
+    seats can, under the usual rules.
+  - **The 0–2 agent rule and the lobby disclosure stay unchanged** unless the SPEC changes.
