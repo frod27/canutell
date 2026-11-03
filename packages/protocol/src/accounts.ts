@@ -14,7 +14,7 @@ export const trustAtLeast = (level: TrustLevel, min: TrustLevel): boolean =>
  * Required consent text versions (docs/consent/). Raising one is a migration (the training views check the
  * research version) and players are asked again.
  */
-export const CONSENT_VERSIONS = { terms: 1, research: 1 } as const;
+export const CONSENT_VERSIONS = { terms: 1, research: 1, studio: 1 } as const;
 export type ConsentType = keyof typeof CONSENT_VERSIONS;
 
 /** Session tokens: `s_` + 64 hex characters (256 bits). Only their SHA-256 is stored. */

@@ -7,5 +7,6 @@ export * from './views';
 export * from './accounts';
 export * from './consent';
 export * from './alpha';
+export * from './studio';
 export * from './messages';
 export * from './json-schema';

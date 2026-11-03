@@ -144,11 +144,14 @@
         "canStart": {
           "type": "boolean"
         },
+        "agent": {
+          "type": ["string", "null"]
+        },
         "disclosure": {
           "type": "string"
         }
       },
-      "required": ["type", "code", "mode", "members", "isHost", "canStart", "disclosure"],
+      "required": ["type", "code", "mode", "members", "isHost", "canStart", "agent", "disclosure"],
       "additionalProperties": false
     },
     {

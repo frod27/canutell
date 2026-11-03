@@ -19,7 +19,7 @@ export const PartyCodeSchema = z
   .regex(/^[A-Z0-9]+$/);
 
 /** Shown in every lobby before a match (SPEC §Match structure). */
-export const AI_DISCLOSURE = 'This match may contain AI players.';
+export const AI_DISCLOSURE = 'This match may contain AI players, including agents made by other players.';
 
 /** The product tagline, shown on every page (DECISIONS "Tagline"). Branding only: no rule depends on it. */
 export const TAGLINE = 'Agents are citizens.';
@@ -42,6 +42,11 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('party.join'), code: PartyCodeSchema }),
   z.object({ type: z.literal('party.leave') }),
   z.object({ type: z.literal('party.start') }),
+  /**
+   * "Play with your agent" (Phase 7): the sender adds one of their own Studio agents to their party, or
+   * removes it with null. Such matches are tagged owner_present (SPEC §Agents, Studio).
+   */
+  z.object({ type: z.literal('party.agent'), agentId: z.number().int().positive().nullable() }),
   z.object({
     type: z.literal('action'),
     matchId: z.string().min(1).max(128),
@@ -96,6 +101,8 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
     members: z.number().int().min(1).max(6),
     isHost: z.boolean(),
     canStart: z.boolean(),
+    /** The Studio agent a party member added (its public name), or null. Party members are friends. */
+    agent: z.string().nullable(),
     disclosure: z.string(),
   }),
   z.object({ type: z.literal('party.closed'), code: PartyCodeSchema, reason: z.string() }),

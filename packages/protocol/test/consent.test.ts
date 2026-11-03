@@ -15,6 +15,10 @@ describe('consent texts', () => {
   it('match the required versions, and research consent is separate from the terms', () => {
     expect(CONSENT_TEXTS.terms.version).toBe(CONSENT_VERSIONS.terms);
     expect(CONSENT_TEXTS.research.version).toBe(CONSENT_VERSIONS.research);
+    expect(CONSENT_TEXTS.studio.version).toBe(CONSENT_VERSIONS.studio);
+    // Studio makers are told what they can't change, and that they see aggregates only.
+    expect(CONSENT_TEXTS.studio.body.join(' ')).toMatch(/cannot change them/);
+    expect(CONSENT_TEXTS.studio.body.join(' ')).toMatch(/only totals/);
     expect(CONSENT_TEXTS.terms.body.join(' ')).not.toMatch(/train/i);
     expect(CONSENT_TEXTS.research.body.join(' ')).toMatch(/change your mind/);
   });
