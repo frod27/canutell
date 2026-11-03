@@ -7,6 +7,14 @@ import { humanlikeness } from './humanlikeness';
 import { AccountError, deleteAccount, pendingReviews, restoreTrust, reviewSeat } from './accounts';
 import { createInvite, listInvites, revokeInvite } from './invites';
 import { formatOpsReport, opsReport } from './ops-report';
+import {
+  findStudioAgentId,
+  moderateStudioAgent,
+  recentStudioVersions,
+  StudioError,
+  studioAgentDetail,
+  type ModerationAction,
+} from './studio';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -23,11 +31,15 @@ import { dirname } from 'node:path';
 // pnpm ops:invite list | revoke --id N
 // pnpm db:delete-account --match ID --seat N --yes   privacy deletion on a player's request (same path as /account)
 // pnpm ops:report [--since-days 7]     how the alpha is going: fun first, then data (aggregates only)
+// pnpm ops:studio recent [--since-days 7]              new Studio agents and versions: name, style hint, strikes
+// pnpm ops:studio show --agent NAME|ID                 status, versions, strikes, moderation history
+// pnpm ops:studio suspend|unsuspend|retire --agent X --reason TEXT --by NAME
+// pnpm ops:studio rename --agent X [--to NAME] --reason TEXT --by NAME   (default name Agent-<id>)
 // All commands use DATABASE_URL.
 
 async function main(): Promise<number> {
   const [command, ...args] = process.argv.slice(2).filter((a) => a !== '--');
-  const sub = command === 'integrity' || command === 'invite' ? args[0] : undefined;
+  const sub = command === 'integrity' || command === 'invite' || command === 'studio' ? args[0] : undefined;
   const rest = sub ? args.slice(1) : args;
   const { values } = parseArgs({
     args: rest,
@@ -48,6 +60,10 @@ async function main(): Promise<number> {
       'expires-days': { type: 'string' },
       id: { type: 'string' },
       'since-days': { type: 'string' },
+      agent: { type: 'string' },
+      reason: { type: 'string' },
+      by: { type: 'string' },
+      to: { type: 'string' },
     },
   });
   const url = process.env.DATABASE_URL;
@@ -139,6 +155,16 @@ async function main(): Promise<number> {
         }
       case 'invite':
         return await invite(sql, sub, values);
+      case 'studio':
+        try {
+          return await studio(sql, sub, values);
+        } catch (e) {
+          if (e instanceof StudioError) {
+            console.error(`${e.code}: ${e.message}`);
+            return 1;
+          }
+          throw e;
+        }
       case 'delete-account': {
         // Identified by the match and seat the player tells you, so the operator never handles player ids.
         const seat = Number(values.seat);
@@ -172,7 +198,7 @@ async function main(): Promise<number> {
       }
       default:
         console.error(
-          'usage: db <migrate|status|derive|purge|latency-model|humanlikeness|integrity|invite|report> [--match ID] [--flag F --yes] [--out FILE]',
+          'usage: db <migrate|status|derive|purge|latency-model|humanlikeness|integrity|invite|report|studio> [--match ID] [--flag F --yes] [--out FILE]',
         );
         return 2;
     }
@@ -276,6 +302,79 @@ async function invite(
   }
   console.error('usage: ops:invite <create|list|revoke>');
   return 2;
+}
+
+/** Operator moderation of Studio agents (docs/proposals/hardening.md). Never prints the maker's id. */
+async function studio(
+  sql: ReturnType<typeof pgSql>,
+  sub: string | undefined,
+  v: Record<string, string | boolean | undefined>,
+): Promise<number> {
+  const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
+  const style = (t: string) => (t ? JSON.stringify(t) : '(no style hint)');
+  if (sub === 'recent') {
+    const days = Number(str('since-days') ?? 7);
+    if (!(days > 0)) {
+      console.error('--since-days must be a positive number');
+      return 2;
+    }
+    const rows = await recentStudioVersions(sql, Date.now() - days * 86_400_000);
+    for (const r of rows)
+      console.log(
+        `#${r.agentId} ${r.name} v${r.versionNumber}  ${r.status}  ${r.releasedAt.slice(0, 16)}  ` +
+          `strikes ${r.strikes}\n    ${style(r.style)}`,
+      );
+    console.error(`${rows.length} version(s) saved in the last ${days} day(s)`);
+    return 0;
+  }
+  const ref = str('agent');
+  if (!ref) {
+    console.error('usage: ops:studio <recent|show|suspend|unsuspend|rename|retire> --agent NAME|ID ...');
+    return 2;
+  }
+  const agentId = await findStudioAgentId(sql, ref);
+  if (agentId === null) {
+    console.error(`no Studio agent ${JSON.stringify(ref)}`);
+    return 1;
+  }
+  if (sub === 'show') {
+    const d = (await studioAgentDetail(sql, agentId))!;
+    console.log(`#${d.agentId} ${d.name}  ${d.status}  created ${d.createdAt.slice(0, 16)}`);
+    if (d.pausedReason) console.log(`  reason shown to the maker: ${d.pausedReason}`);
+    for (const x of d.versions)
+      console.log(
+        `  v${x.versionNumber}  ${x.releasedAt.slice(0, 16)}  strikes ${x.strikes}  ${style(x.style)}`,
+      );
+    for (const m of d.moderation)
+      console.log(
+        `  ${m.at.slice(0, 16)}  ${m.action} by ${m.moderator}: ${m.reason}` +
+          (m.action === 'rename' ? `  (${m.oldName} → ${m.newName})` : ''),
+      );
+    return 0;
+  }
+  const actions: ModerationAction[] = ['suspend', 'unsuspend', 'rename', 'retire'];
+  if (!actions.includes(sub as ModerationAction)) {
+    console.error('usage: ops:studio <recent|show|suspend|unsuspend|rename|retire>');
+    return 2;
+  }
+  const reason = str('reason') ?? (sub === 'unsuspend' ? 'lifted' : undefined);
+  const by = str('by');
+  if (!reason || !by) {
+    console.error(
+      `usage: ops:studio ${sub} --agent NAME|ID --reason TEXT --by NAME${sub === 'rename' ? ' [--to NAME]' : ''}`,
+    );
+    return 2;
+  }
+  const r = await moderateStudioAgent(sql, {
+    agentId,
+    action: sub as ModerationAction,
+    reason,
+    moderator: by,
+    newName: str('to'),
+    now: Date.now(),
+  });
+  console.log(`#${agentId} ${r.name}: ${r.status}`);
+  return 0;
 }
 
 main().then(

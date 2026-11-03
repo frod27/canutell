@@ -34,7 +34,8 @@
     "db:integrity": "tsx packages/db/src/cli.ts integrity",
     "db:delete-account": "tsx packages/db/src/cli.ts delete-account",
     "ops:invite": "tsx packages/db/src/cli.ts invite",
-    "ops:report": "tsx packages/db/src/cli.ts report"
+    "ops:report": "tsx packages/db/src/cli.ts report",
+    "ops:studio": "tsx packages/db/src/cli.ts studio"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

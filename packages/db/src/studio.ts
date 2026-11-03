@@ -23,7 +23,15 @@ import type { Sql } from './sql';
 export class StudioError extends Error {
   constructor(
     readonly code:
-      'not_eligible' | 'too_many_agents' | 'bad_name' | 'name_taken' | 'bad_style' | 'not_found' | 'retired',
+      | 'not_eligible'
+      | 'too_many_agents'
+      | 'bad_name'
+      | 'name_taken'
+      | 'bad_style'
+      | 'not_found'
+      | 'retired'
+      | 'suspended'
+      | 'bad_action',
     message: string,
   ) {
     super(message);
@@ -85,7 +93,12 @@ export async function createStudioAgent(
       [a.ownerId],
     )) as [{ k: number }];
     if (k >= STUDIO_LIMITS.maxAgents) throw new StudioError('too_many_agents', 'retire an agent first');
-    const taken = await tx.query('select 1 from studio_agents where lower(name) = lower($1)', [name]);
+    const taken = await tx.query(
+      `select 1 from studio_agents where lower(name) = lower($1)
+       union all
+       select 1 from studio_moderation where action = 'rename' and lower(old_name) = lower($1)`,
+      [name],
+    );
     if (taken.length) throw new StudioError('name_taken', 'that name is taken');
     await setConsent(tx, a.ownerId, 'studio', true, a.now);
     const [r] = await tx.query<{ agent_id: number }>(
@@ -106,7 +119,10 @@ async function ownedAgent(tx: Sql, ownerId: string, agentId: number) {
   return row;
 }
 
-/** Save a change as a new version. Its record starts fresh, and a paused agent is active again. */
+/**
+ * Save a change as a new version. Its record starts fresh, and an agent paused by strikes is active again.
+ * A moderator's suspension is not lifted this way.
+ */
 export async function saveStudioVersion(
   sql: Sql,
   a: { ownerId: string; agentId: number; config: StudioConfig; now: number },
@@ -115,6 +131,8 @@ export async function saveStudioVersion(
   return sql.transaction(async (tx) => {
     const row = await ownedAgent(tx, a.ownerId, a.agentId);
     if (row.status === 'retired') throw new StudioError('retired', 'this agent is retired');
+    if (row.status === 'suspended')
+      throw new StudioError('suspended', 'this agent is suspended by the moderators');
     const label = await insertVersion(tx, a.agentId, config, a.now);
     await tx.query(`update studio_agents set status = 'active', paused_reason = null where agent_id = $1`, [
       a.agentId,
@@ -345,4 +363,230 @@ export async function studioNames(
       { name: r.name, versionNumber: parseStudioVersion(r.agent_version)!.n },
     ]),
   );
+}
+
+// ---------- Operator moderation (docs/proposals/hardening.md; pnpm ops:studio) ----------
+// Every action writes one append-only studio_moderation row. Output never includes the maker's id.
+
+export type ModerationAction = 'suspend' | 'unsuspend' | 'rename' | 'retire';
+
+export const SUSPENDED_PREFIX = 'Suspended by the moderators: ';
+
+export interface StudioAgentDetail {
+  agentId: number;
+  name: string;
+  status: string;
+  pausedReason: string | null;
+  createdAt: string;
+  versions: {
+    agentVersion: string;
+    versionNumber: number;
+    releasedAt: string;
+    style: string;
+    strikes: number;
+  }[];
+  moderation: {
+    action: ModerationAction;
+    reason: string;
+    moderator: string;
+    oldName: string | null;
+    newName: string | null;
+    at: string;
+  }[];
+}
+
+/** An agent by numeric id or by name (any case). */
+export async function findStudioAgentId(sql: Sql, ref: string): Promise<number | null> {
+  const r = ref.trim();
+  const rows = /^\d{1,12}$/.test(r)
+    ? await sql.query<{ agent_id: number }>('select agent_id from studio_agents where agent_id = $1', [
+        Number(r),
+      ])
+    : await sql.query<{ agent_id: number }>(
+        'select agent_id from studio_agents where lower(name) = lower($1)',
+        [r],
+      );
+  return rows[0] ? Number(rows[0].agent_id) : null;
+}
+
+export async function studioAgentDetail(sql: Sql, agentId: number): Promise<StudioAgentDetail | null> {
+  const [a] = await sql.query<{
+    agent_id: number;
+    name: string;
+    status: string;
+    paused_reason: string | null;
+    created_at: Date | string;
+  }>('select agent_id, name, status, paused_reason, created_at from studio_agents where agent_id = $1', [
+    agentId,
+  ]);
+  if (!a) return null;
+  const versions = await sql.query<{
+    agent_version: string;
+    released_at: Date | string;
+    config: StudioConfig;
+    strikes: number;
+  }>(
+    `select v.agent_version, v.released_at, v.config,
+            (select count(*)::int from studio_strikes s where s.agent_version = v.agent_version) as strikes
+       from agent_versions v where v.studio_agent_id = $1
+      order by ${VERSION_N}`,
+    [agentId],
+  );
+  const moderation = await sql.query<{
+    action: ModerationAction;
+    reason: string;
+    moderator: string;
+    old_name: string | null;
+    new_name: string | null;
+    at: Date | string;
+  }>(
+    'select action, reason, moderator, old_name, new_name, at from studio_moderation where agent_id = $1 order by action_id',
+    [agentId],
+  );
+  return {
+    agentId: Number(a.agent_id),
+    name: a.name,
+    status: a.status,
+    pausedReason: a.paused_reason,
+    createdAt: new Date(a.created_at).toISOString(),
+    versions: versions.map((v) => ({
+      agentVersion: v.agent_version,
+      versionNumber: parseStudioVersion(v.agent_version)!.n,
+      releasedAt: new Date(v.released_at).toISOString(),
+      style: v.config.style,
+      strikes: v.strikes,
+    })),
+    moderation: moderation.map((m) => ({
+      action: m.action,
+      reason: m.reason,
+      moderator: m.moderator,
+      oldName: m.old_name,
+      newName: m.new_name,
+      at: new Date(m.at).toISOString(),
+    })),
+  };
+}
+
+/** Versions saved since `since` (new agents and edits), newest first, for an operator to read through. */
+export async function recentStudioVersions(
+  sql: Sql,
+  since: number,
+): Promise<
+  {
+    agentId: number;
+    name: string;
+    status: string;
+    versionNumber: number;
+    releasedAt: string;
+    style: string;
+    strikes: number;
+  }[]
+> {
+  const rows = await sql.query<{
+    agent_id: number;
+    name: string;
+    status: string;
+    agent_version: string;
+    released_at: Date | string;
+    config: StudioConfig;
+    strikes: number;
+  }>(
+    `select sa.agent_id, sa.name, sa.status, v.agent_version, v.released_at, v.config,
+            (select count(*)::int from studio_strikes s where s.agent_version = v.agent_version) as strikes
+       from agent_versions v join studio_agents sa on sa.agent_id = v.studio_agent_id
+      where v.released_at >= $1::timestamptz
+      order by v.released_at desc, sa.agent_id`,
+    [iso(since)],
+  );
+  return rows.map((r) => ({
+    agentId: Number(r.agent_id),
+    name: r.name,
+    status: r.status,
+    versionNumber: parseStudioVersion(r.agent_version)!.n,
+    releasedAt: new Date(r.released_at).toISOString(),
+    style: r.config.style,
+    strikes: r.strikes,
+  }));
+}
+
+/**
+ * A moderator's action on a Studio agent, recorded in studio_moderation.
+ * - suspend: plays nowhere; the maker sees the reason and can only retire it (saving a version won't lift it).
+ * - unsuspend: back to active, or to paused if its current version already has enough strikes.
+ * - rename: a new display name (default `Agent-<id>`); the old name can't be used by a new agent again.
+ * - retire: for good.
+ */
+export async function moderateStudioAgent(
+  sql: Sql,
+  a: {
+    agentId: number;
+    action: ModerationAction;
+    reason: string;
+    moderator: string;
+    newName?: string;
+    now: number;
+  },
+): Promise<{ status: string; name: string }> {
+  const reason = a.reason.trim();
+  const moderator = a.moderator.trim();
+  if (!reason || reason.length > 500)
+    throw new StudioError('bad_action', 'a reason (1–500 characters) is needed');
+  if (!moderator || moderator.length > 64)
+    throw new StudioError('bad_action', 'a moderator name (1–64 characters) is needed');
+  return sql.transaction(async (tx) => {
+    const [row] = await tx.query<{ status: string; name: string }>(
+      'select status, name from studio_agents where agent_id = $1 for update',
+      [a.agentId],
+    );
+    if (!row) throw new StudioError('not_found', 'no such agent');
+    let { status, name } = row;
+    let oldName: string | null = null;
+    let newName: string | null = null;
+    if (a.action === 'suspend') {
+      if (status === 'retired') throw new StudioError('retired', 'this agent is retired');
+      status = 'suspended';
+      await tx.query(
+        `update studio_agents set status = 'suspended', paused_reason = $2 where agent_id = $1`,
+        [a.agentId, SUSPENDED_PREFIX + reason],
+      );
+    } else if (a.action === 'unsuspend') {
+      if (status !== 'suspended')
+        throw new StudioError('bad_action', `the agent is ${status}, not suspended`);
+      const [current] = await currentVersions(tx, 'sa.agent_id = $1', [a.agentId]);
+      const strikes = current ? (await studioStats(tx, current.agentVersion)).strikes : 0;
+      status = strikes >= STUDIO_LIMITS.strikesToPause ? 'paused' : 'active';
+      await tx.query('update studio_agents set status = $2, paused_reason = $3 where agent_id = $1', [
+        a.agentId,
+        status,
+        status === 'paused'
+          ? `${strikes} lines blocked by the safety filter; save a new version to resume`
+          : null,
+      ]);
+    } else if (a.action === 'rename') {
+      const to = (a.newName ?? `Agent-${a.agentId}`).trim();
+      const problem = checkAgentName(to);
+      if (problem) throw new StudioError('bad_name', `name: ${problem}`);
+      const taken = await tx.query(
+        'select 1 from studio_agents where lower(name) = lower($1) and agent_id <> $2',
+        [to, a.agentId],
+      );
+      if (taken.length) throw new StudioError('name_taken', 'that name is taken');
+      oldName = name;
+      newName = to;
+      name = to;
+      await tx.query('update studio_agents set name = $2 where agent_id = $1', [a.agentId, to]);
+    } else if (a.action === 'retire') {
+      if (status === 'retired') throw new StudioError('retired', 'this agent is already retired');
+      status = 'retired';
+      await tx.query(`update studio_agents set status = 'retired' where agent_id = $1`, [a.agentId]);
+    } else {
+      throw new StudioError('bad_action', `unknown action ${String(a.action)}`);
+    }
+    await tx.query(
+      `insert into studio_moderation (agent_id, action, reason, moderator, old_name, new_name, at)
+       values ($1, $2, $3, $4, $5, $6, $7::timestamptz)`,
+      [a.agentId, a.action, reason, moderator, oldName, newName, iso(a.now)],
+    );
+    return { status, name };
+  });
 }

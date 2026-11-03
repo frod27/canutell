@@ -4,15 +4,19 @@ import {
   createStudioAgent,
   deleteAccount,
   eligibleStudioVersions,
+  findStudioAgentId,
   listMyAgents,
+  moderateStudioAgent,
   ownAgentForParty,
   PostgresStore,
   purgeMatchesWithFlag,
+  recentStudioVersions,
   recordStrike,
   retireStudioAgent,
   saveStudioVersion,
   StudioError,
   studioLeaderboard,
+  studioAgentDetail,
   studioNames,
   studioStats,
   type Sql,
@@ -247,5 +251,101 @@ describe('what makers and the public see', () => {
     ]);
     await purgeMatchesWithFlag(sql, 'phase5');
     expect(await sql.query('select 1 from players where player_id = $1', [owner2])).toHaveLength(1);
+  });
+});
+
+describe('operator moderation (docs/proposals/hardening.md)', () => {
+  const mod = (agentId: number, action: 'suspend' | 'unsuspend' | 'rename' | 'retire', newName?: string) =>
+    moderateStudioAgent(sql, {
+      agentId,
+      action,
+      reason: 'test reason',
+      moderator: 'ops-1',
+      newName,
+      now: NOW,
+    });
+
+  it('a suspension takes the agent out of public and private play, and a new version does not lift it', async () => {
+    const owner = await newMaker();
+    const a = await createStudioAgent(sql, { ownerId: owner, name: 'Rowdy', config: config(), now: NOW });
+    expect(await findStudioAgentId(sql, 'ROWDY')).toBe(a.agentId);
+    expect(await findStudioAgentId(sql, String(a.agentId))).toBe(a.agentId);
+    await mod(a.agentId, 'suspend');
+    const eligible = await eligibleStudioVersions(sql, { excludeOwners: [], now: NOW });
+    expect(eligible.some((v) => v.agentId === a.agentId)).toBe(false);
+    expect(await ownAgentForParty(sql, owner, a.agentId)).toBeNull();
+    await expect(
+      saveStudioVersion(sql, { ownerId: owner, agentId: a.agentId, config: config(), now: NOW + 1 }),
+    ).rejects.toMatchObject({ code: 'suspended' });
+    const [mine] = await listMyAgents(sql, owner, NOW);
+    expect(mine).toMatchObject({
+      status: 'suspended',
+      pausedReason: 'Suspended by the moderators: test reason',
+    });
+    // Still counts against the maker's limit; the maker can retire it.
+    await retireStudioAgent(sql, owner, a.agentId);
+    await expect(mod(a.agentId, 'unsuspend')).rejects.toMatchObject({ code: 'bad_action' });
+  });
+
+  it('unsuspending returns to active, or to paused when the version already has enough strikes', async () => {
+    const owner = await newMaker();
+    const a = await createStudioAgent(sql, { ownerId: owner, name: 'Bouncer', config: config(), now: NOW });
+    await mod(a.agentId, 'suspend');
+    expect(await mod(a.agentId, 'unsuspend')).toMatchObject({ status: 'active' });
+
+    const b = await createStudioAgent(sql, { ownerId: owner, name: 'Struck', config: config(), now: NOW });
+    const m = await playWith(1500, b.agentVersion);
+    for (let k = 0; k < STUDIO_LIMITS.strikesToPause; k++)
+      await recordStrike(sql, { agentVersion: b.agentVersion, matchId: m.matchId, reason: 'x', now: NOW });
+    await mod(b.agentId, 'suspend');
+    expect(await mod(b.agentId, 'unsuspend')).toMatchObject({ status: 'paused' });
+  });
+
+  it('rename keeps versions, changes the public name, and the old name stays unavailable', async () => {
+    const owner = await newMaker();
+    const a = await createStudioAgent(sql, { ownerId: owner, name: 'Badname', config: config(), now: NOW });
+    expect(await mod(a.agentId, 'rename')).toMatchObject({ name: `Agent-${a.agentId}` });
+    expect(await studioNames(sql, [a.agentVersion])).toEqual({
+      [a.agentVersion]: { name: `Agent-${a.agentId}`, versionNumber: 1 },
+    });
+    await expect(
+      createStudioAgent(sql, { ownerId: owner, name: 'badname', config: config(), now: NOW }),
+    ).rejects.toMatchObject({ code: 'name_taken' });
+    await expect(mod(a.agentId, 'rename', 'Jane Doe')).rejects.toMatchObject({ code: 'bad_name' });
+    await mod(a.agentId, 'rename', 'Tidy');
+    const d = await studioAgentDetail(sql, a.agentId);
+    expect(d!.name).toBe('Tidy');
+    expect(d!.versions).toHaveLength(1);
+    expect(d!.moderation.map((x) => [x.action, x.oldName, x.newName])).toEqual([
+      ['rename', 'Badname', `Agent-${a.agentId}`],
+      ['rename', `Agent-${a.agentId}`, 'Tidy'],
+    ]);
+  });
+
+  it('every action is recorded append-only, needs a reason and a moderator, and output has no owner ids', async () => {
+    const owner = await newMaker();
+    const a = await createStudioAgent(sql, { ownerId: owner, name: 'Logged', config: config(), now: NOW });
+    await expect(
+      moderateStudioAgent(sql, {
+        agentId: a.agentId,
+        action: 'suspend',
+        reason: ' ',
+        moderator: 'x',
+        now: NOW,
+      }),
+    ).rejects.toMatchObject({ code: 'bad_action' });
+    await mod(a.agentId, 'retire');
+    await expect(mod(a.agentId, 'retire')).rejects.toMatchObject({ code: 'retired' });
+    await expect(
+      sql.query(`update studio_moderation set reason = 'edited' where agent_id = $1`, [a.agentId]),
+    ).rejects.toThrow(/append-only/);
+    await expect(sql.query('delete from studio_moderation where agent_id = $1', [a.agentId])).rejects.toThrow(
+      /append-only/,
+    );
+    const recent = await recentStudioVersions(sql, NOW - 1);
+    expect(recent.some((r) => r.name === 'Logged')).toBe(true);
+    const detail = await studioAgentDetail(sql, a.agentId);
+    expect(JSON.stringify([recent, detail])).not.toMatch(/p_[0-9a-f]{8}/);
+    expect(JSON.stringify([recent, detail])).not.toContain(owner);
   });
 });

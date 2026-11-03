@@ -97,7 +97,7 @@ export type StudioStats = z.infer<typeof StudioStatsSchema>;
 export const StudioAgentSummarySchema = z.object({
   agentId: z.number().int(),
   name: z.string(),
-  status: z.enum(['active', 'paused', 'retired']),
+  status: z.enum(['active', 'paused', 'suspended', 'retired']),
   pausedReason: z.string().nullable(),
   version: z.string(),
   versionNumber: z.number().int(),
