@@ -64,6 +64,15 @@ h3 {
   font-size: 1.6rem;
   font-weight: 700;
 }
+.tagline {
+  max-width: 640px;
+  margin: 8px auto 24px;
+  padding: 0 16px;
+  text-align: center;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
 .muted {
   color: var(--muted);
 }

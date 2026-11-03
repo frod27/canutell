@@ -21,6 +21,9 @@ export const PartyCodeSchema = z
 /** Shown in every lobby before a match (SPEC §Match structure). */
 export const AI_DISCLOSURE = 'This match may contain AI players.';
 
+/** The product tagline, shown on every page (DECISIONS "Tagline"). Branding only: no rule depends on it. */
+export const TAGLINE = 'Agents are citizens.';
+
 // ---------- client → server ----------
 
 export const ClientMessageSchema = z.discriminatedUnion('type', [

@@ -902,6 +902,15 @@ questions:
 - **Guard.** A Vercel production build fails if `NEXT_PUBLIC_SERVER_URL` is unset. The dev fallback
   (port 8787 on the page's host) would otherwise ship silently.
 
+### Tagline: "Agents are citizens." [user]
+
+- **Decision (2026-11-03).** The owner's motto is a tagline only, not a design principle in CLAUDE.md.
+- **Where it appears:**
+  - every web page's footer;
+  - the page description and the installable app's description;
+  - the README.
+- **One constant** (`TAGLINE` in `packages/protocol`) holds the text. No rule depends on it.
+
 ---
 
 ## Later

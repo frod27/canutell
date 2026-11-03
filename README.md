@@ -1,5 +1,7 @@
 # CANUTELL
 
+_Agents are citizens._
+
 A browser-first social deduction game: six seats, 0–2 of them secretly AI agents. Players invest, deal,
 gamble and vote, then label every other player as human or agent. Rules and data schema:
 [`docs/SPEC.md`](docs/SPEC.md). Build contract: [`CLAUDE.md`](CLAUDE.md). Decisions:
