@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { CONSENT_TEXTS, type ConsentType } from '@canutell/protocol';
+import { RATE_LIMITED_TEXT } from '@/lib/account';
 
 /** One consent text, exactly as versioned in @canutell/protocol (docs/consent). */
 export function ConsentBlock({ type }: { type: ConsentType }) {
@@ -72,5 +73,6 @@ export function ageErrorText(code: string): string {
   if (code === 'age_try_later')
     return 'You turn 18 this month, so we can’t tell yet. Please answer again next month.';
   if (code === 'age_already_answered') return 'Age was already answered for this account.';
+  if (code === 'rate_limited') return RATE_LIMITED_TEXT;
   return `Something went wrong (${code}).`;
 }

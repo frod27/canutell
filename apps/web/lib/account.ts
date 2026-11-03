@@ -34,6 +34,9 @@ export function writeSession(token: string | null): void {
   }
 }
 
+/** The server's rate limit (HTTP 429, `rate_limited`). */
+export const RATE_LIMITED_TEXT = 'Too many tries from your network. Please wait a few minutes and try again.';
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,

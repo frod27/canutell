@@ -248,6 +248,31 @@ try {
     /owner_present/.test(flags) && /studio_agents/.test(flags),
     flags,
   );
+
+  // ---------- Moderation (pre-launch hardening): an operator suspends the agent; the maker sees why ----------
+  const opsStudio = (...args) =>
+    execFileSync(join(ROOT, 'node_modules/.bin/tsx'), ['packages/db/src/cli.ts', 'studio', ...args], {
+      cwd: ROOT,
+      env: { ...process.env, DATABASE_URL: DB },
+      encoding: 'utf8',
+    });
+  opsStudio('suspend', '--agent', 'marlowe', '--reason', 'e2e moderation check', '--by', 'e2e');
+  await a.page.goto(`${WEB}/studio`);
+  await a.page.getByText('Suspended by the moderators: e2e moderation check').waitFor({ timeout: 10_000 });
+  check(
+    'a suspended agent shows the moderators’ reason and can’t be edited',
+    !(await a.page.getByRole('button', { name: /^(Edit|Fix and resume)$/ }).isVisible()) &&
+      q(`select count(*) from studio_moderation where action = 'suspend'`) === '1',
+  );
+  check(
+    'ops:studio show lists the action without the maker’s id',
+    (() => {
+      const out = opsStudio('show', '--agent', 'Marlowe');
+      return /suspend by e2e: e2e moderation check/.test(out) && !/p_[0-9a-f]{8}/.test(out);
+    })(),
+  );
+  opsStudio('unsuspend', '--agent', 'Marlowe', '--by', 'e2e');
+  await a.page.goto(revealUrl);
   check(
     'the Studio agent took a seat; the maker is out of the training pool',
     q(`select count(*) from seats where match_id = '${matchId}' and agent_version like 'studio:%'`) === '1' &&

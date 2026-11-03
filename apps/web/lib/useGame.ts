@@ -137,9 +137,15 @@ export function useGame() {
           } satisfies ClientMessage),
         );
       };
-      socket.onclose = () => {
-        setState((s) => ({ ...s, connected: false }));
-        if (!stopped) retry = setTimeout(connect, 1500);
+      socket.onclose = (ev) => {
+        // 1013: too many new connections from this network (server rate limit); back off for a while.
+        const limited = ev.code === 1013;
+        setState((s) => ({
+          ...s,
+          connected: false,
+          notice: limited ? 'Too many connections from your network. Trying again in 30 seconds…' : s.notice,
+        }));
+        if (!stopped) retry = setTimeout(connect, limited ? 30_000 : 1500);
       };
       socket.onmessage = (ev) => {
         const parsed = ServerMessageSchema.safeParse(JSON.parse(String(ev.data)));

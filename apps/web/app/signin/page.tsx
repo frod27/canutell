@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { signIn } from '@/lib/account';
+import { ApiError, RATE_LIMITED_TEXT, signIn } from '@/lib/account';
 
 export default function SignIn() {
   const router = useRouter();
@@ -23,8 +23,12 @@ export default function SignIn() {
             try {
               await signIn();
               router.push('/');
-            } catch {
-              setError('Sign-in didn’t complete. Please try again.');
+            } catch (e) {
+              setError(
+                e instanceof ApiError && e.code === 'rate_limited'
+                  ? RATE_LIMITED_TEXT
+                  : 'Sign-in didn’t complete. Please try again.',
+              );
             } finally {
               setBusy(false);
             }

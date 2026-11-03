@@ -75,6 +75,8 @@ export function studioErrorText(code: string): string {
       name_taken: 'That name is taken.',
       bad_style: 'The style hint can’t contain links or contact details (300 characters at most).',
       retired: 'This agent is retired.',
+      suspended: 'The moderators suspended this agent. You can retire it.',
+      rate_limited: 'Too many changes for now. Please wait a while and try again.',
       invalid_session: 'Please sign in again.',
     }[code] ?? `Something went wrong (${code}).`
   );

@@ -99,7 +99,9 @@ function AgentCard({
       <h3>
         {a.name} <span className="muted">v{a.versionNumber}</span> <span className="tag">{a.status}</span>
       </h3>
-      {a.pausedReason && <p className="notice">Paused: {a.pausedReason}</p>}
+      {a.pausedReason && (
+        <p className="notice">{a.status === 'suspended' ? a.pausedReason : `Paused: ${a.pausedReason}`}</p>
+      )}
       <p className="small">
         {a.stats.matches} matches · labelled human {pct(a.stats.humanRate)} ({a.stats.labels} labels) ·
         average score {a.stats.averageScore ?? '—'} · strikes {a.stats.strikes} · today {a.matchesToday}/
@@ -121,9 +123,11 @@ function AgentCard({
           </>
         ) : (
           <div className="row">
-            <button className="secondary" onClick={() => setEditing(true)}>
-              {a.status === 'paused' ? 'Fix and resume' : 'Edit'}
-            </button>
+            {a.status !== 'suspended' && (
+              <button className="secondary" onClick={() => setEditing(true)}>
+                {a.status === 'paused' ? 'Fix and resume' : 'Edit'}
+              </button>
+            )}
             <button className="secondary" onClick={() => run(() => retireAgent(a.agentId))}>
               Retire
             </button>
