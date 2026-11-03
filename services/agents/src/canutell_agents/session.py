@@ -12,6 +12,7 @@ import asyncio
 import logging
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +27,16 @@ log = logging.getLogger("canutell.agents.session")
 
 #: Never plan an action closer than this to the deadline (virtual ms): it would arrive late.
 DEADLINE_MARGIN_MS = 1_500
+
+
+@dataclass
+class StudioSeat:
+    """A Studio agent's seat: its maker's traits and style hint, and where blocked lines are reported."""
+
+    agent_version: str
+    traits: dict[str, float]
+    style: str
+    on_strike: Callable[[str], None] = lambda _reason: None
 
 
 @dataclass
@@ -48,11 +59,14 @@ class AgentSession:
         latency_model: LatencyModel,
         chat: ChatEngine,
         clock_speed: float = 1.0,
+        studio: StudioSeat | None = None,
     ) -> None:
         self.server_url = server_url
         self.token = token
         self.rng = random.Random(seed)
-        self.persona = Persona.draw(self.rng)
+        # A Studio agent plays with its maker's traits; otherwise a persona is drawn (SPEC §Agents).
+        self.studio = studio
+        self.persona = Persona.from_traits(studio.traits) if studio else Persona.draw(self.rng)
         self.policy = BaselinePolicy(self.persona, self.rng)
         self.timing = Timing(latency_model, self.rng)
         self.chat = chat
@@ -211,7 +225,11 @@ class AgentSession:
             if view is None or view["phase"] == "reveal":
                 return
             started = time.monotonic()
-            text = await self.chat.compose(view, self.persona, req)
+            drops_before = len(self.chat.drops)
+            text = await self.chat.compose(view, self.persona, req, self.studio.style if self.studio else None)
+            if self.studio is not None:
+                for reason in self.chat.drops[drops_before:]:
+                    self.studio.on_strike(reason)
             if text is None:
                 return
             # Typing time runs from when the reply was decided; time spent waiting on the LLM counts toward it.

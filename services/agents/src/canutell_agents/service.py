@@ -1,6 +1,10 @@
 """HTTP control surface: the game server asks for an agent per agent seat.
 
-POST /seats  {serverUrl, token, agentVersion, clockSpeed}  (header x-agent-secret)
+POST /seats  {serverUrl, token, agentVersion, clockSpeed, studio?}  (header x-agent-secret)
+    agentVersion is baseline-1, or a Studio version `studio:<id>:v<n>` with studio = {config: {traits, style}}
+    (SPEC §Agents, Studio): the maker's traits and style hint; timing, rules and the seat view are unchanged.
+    Lines a Studio agent's chat has blocked are reported as strikes to the game server
+    (POST <server>/internal/agent-strikes with the same secret).
     → 200 {accepted, agentVersion, flags}; the service then connects to serverUrl over WebSocket with the
       token, exactly like a reconnecting player. Nothing about the match is sent (no back channel), and
       sessions are kept by token only — never grouped by match.
@@ -22,21 +26,49 @@ import hmac
 import logging
 import os
 import random
+import re
 import secrets
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import aiohttp
 import anthropic
 from aiohttp import web
 
 from . import AGENT_VERSION
 from .chat import DEFAULT_MODEL, ChatEngine, LlmChat, ScriptedChat
-from .session import AgentSession
+from .session import AgentSession, StudioSeat
 from .timing import LatencyModel
 
 log = logging.getLogger("canutell.agents.service")
 DEFAULT_LATENCY_PATH = Path(__file__).resolve().parents[2] / "data" / "latency.json"
+
+
+STUDIO_VERSION = re.compile(r"^studio:\d+:v\d+$")
+TRAIT_KEYS = (
+    "cooperativeness",
+    "reciprocity",
+    "riskAppetite",
+    "patience",
+    "votePropensity",
+    "chattiness",
+    "randomness",
+)
+
+
+def parse_studio_config(raw: Any) -> tuple[dict[str, float], str] | None:
+    """The maker's traits (each 0-1) and style hint (<= 300 chars), as the game server validated them."""
+    try:
+        config = raw["config"]
+        traits = {k: float(config["traits"][k]) for k in TRAIT_KEYS}
+        style = str(config["style"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(0.0 <= v <= 1.0 for v in traits.values()) or len(style) > 300:
+        return None
+    return traits, style
 
 
 def _has_llm_credentials() -> bool:
@@ -58,6 +90,7 @@ class AgentService:
         self.llm = llm
         self.chat_model = chat_model
         self.sessions: dict[str, asyncio.Task[Any]] = {}  # by token only
+        self._background: set[asyncio.Future[None]] = set()
         self.completed = 0
 
     def _server_url_allowed(self, url: str) -> bool:
@@ -86,8 +119,16 @@ class AgentService:
             speed = float(body.get("clockSpeed", 1))
         except (ValueError, KeyError, TypeError):
             return web.json_response({"error": "bad request"}, status=400)
-        if body.get("agentVersion") != AGENT_VERSION:
-            return web.json_response({"error": f"this service runs {AGENT_VERSION}"}, status=409)
+        version = body.get("agentVersion")
+        studio: StudioSeat | None = None
+        if isinstance(version, str) and STUDIO_VERSION.match(version):
+            config = parse_studio_config(body.get("studio"))
+            if config is None:
+                return web.json_response({"error": "bad studio config"}, status=400)
+            traits, style = config
+            studio = StudioSeat(version, traits, style, on_strike=self._strike_reporter(server_url, token, version))
+        elif version != AGENT_VERSION:
+            return web.json_response({"error": f"this service runs {AGENT_VERSION} and Studio versions"}, status=409)
         if not self._server_url_allowed(server_url) or not (0 < speed <= 1000) or len(token) > 128:
             return web.json_response({"error": "bad request"}, status=400)
         seed = secrets.token_hex(16)  # each seat: fresh, independent randomness
@@ -98,6 +139,7 @@ class AgentService:
             self.latency_model,
             self._chat_engine(random.Random(seed + ":chat")),
             clock_speed=speed,
+            studio=studio,
         )
         task = asyncio.create_task(session.run())
         self.sessions[token] = task
@@ -109,7 +151,36 @@ class AgentService:
                 log.warning("agent session ended with an error: %s", t.exception())
 
         task.add_done_callback(done)
-        return web.json_response({"accepted": True, "agentVersion": AGENT_VERSION, "flags": self.flags()})
+        return web.json_response({"accepted": True, "agentVersion": version, "flags": self.flags()})
+
+    def _strike_reporter(self, server_url: str, token: str, version: str) -> Callable[[str], None]:
+        """Fire-and-forget report of a blocked line to the game server, which records the strike."""
+        parsed = urlparse(server_url)
+        scheme = "https" if parsed.scheme == "wss" else "http"
+        url = f"{scheme}://{parsed.netloc}/internal/agent-strikes"
+
+        async def send(reason: str) -> None:
+            try:
+                async with (
+                    aiohttp.ClientSession() as http,
+                    http.post(
+                        url,
+                        json={"token": token, "agentVersion": version, "reason": reason},
+                        headers={"x-agent-secret": self.secret},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as r,
+                ):
+                    if r.status >= 300:
+                        log.warning("strike report refused: %s", r.status)
+            except (aiohttp.ClientError, TimeoutError) as e:
+                log.warning("strike report failed: %s", e)
+
+        def report(reason: str) -> None:
+            task = asyncio.ensure_future(send(reason))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
+
+        return report
 
     async def handle_health(self, _request: web.Request) -> web.Response:
         return web.json_response(

@@ -45,6 +45,24 @@ class Persona:
             temperature=0.6 + rng.random() * 0.8,
         )
 
+    @staticmethod
+    def from_traits(traits: dict[str, float]) -> Persona:
+        """A Studio agent's persona, set by its maker (SPEC §Agents, Studio). `randomness` 0-1 spans the same
+        softmax temperature range as a drawn persona."""
+
+        def get(key: str) -> float:
+            return min(1.0, max(0.0, float(traits[key])))
+
+        return Persona(
+            cooperativeness=get("cooperativeness"),
+            reciprocity=get("reciprocity"),
+            risk_appetite=get("riskAppetite"),
+            patience=get("patience"),
+            vote_propensity=get("votePropensity"),
+            chattiness=get("chattiness"),
+            temperature=0.6 + get("randomness") * 0.8,
+        )
+
 
 def softmax_sample(
     rng: random.Random, options: list[Any], utilities: list[float], temperature: float

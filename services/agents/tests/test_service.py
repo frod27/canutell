@@ -48,4 +48,13 @@ async def test_seat_requests_are_authenticated_and_validated() -> None:
 
 def test_sessions_are_indexed_by_token_only() -> None:
     service = AgentService("s", LatencyModel())
-    assert set(vars(service)) == {"secret", "latency_model", "allowed", "llm", "chat_model", "sessions", "completed"}
+    assert set(vars(service)) == {
+        "secret",
+        "latency_model",
+        "allowed",
+        "llm",
+        "chat_model",
+        "sessions",
+        "completed",
+        "_background",  # in-flight strike reports, keyed by nothing
+    }
