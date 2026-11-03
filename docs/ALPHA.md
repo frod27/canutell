@@ -21,10 +21,11 @@ command to run.
 3. **(owner) Supabase project.**
    - Create the project.
    - Copy the **direct connection** or **session pooler** connection string; add `?sslmode=require`.
-   - From your machine, run:
+   - You don't need to migrate by hand: each server deploy runs `node dist/db-cli.mjs migrate` first
+     (`release_command` in `fly.server.toml`). To check from your machine instead:
      ```sh
      export DATABASE_URL='postgres://…?sslmode=require'
-     pnpm db:migrate && pnpm db:status          # 0001–0005 applied
+     pnpm db:status          # 0001–0005 applied after the first deploy
      ```
    - The server connects as the database owner. Every table has row-level security with no policies,
      and the `anon` and `authenticated` roles are revoked, so Supabase's public API exposes nothing.
@@ -37,8 +38,8 @@ command to run.
    fly apps create canutell-server
    fly apps create canutell-agents
    ```
-   - Edit `fly.server.toml`: set `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS` and `CORS_ORIGIN` to your web
-     domain, `GAME_NIGHTS` to your schedule, and `primary_region` near your players.
+   - `fly.server.toml` is set for `canutell.com`. Check `GAME_NIGHTS` (your schedule) and
+     `primary_region` (`mad`, Madrid) in both toml files.
    - `fly.agents.toml` already sets `AGENT_CHAT_MODEL=claude-haiku-5-5`, the owner's choice for the alpha.
 6. **(owner) Secrets** (never in the toml files):
    ```sh
@@ -49,9 +50,9 @@ command to run.
    Without `ANTHROPIC_API_KEY`, agents chat from scripted lines, and matches are flagged `scripted_chat`.
 7. **Deploy** from the repo root:
    ```sh
-   fly deploy --config fly.agents.toml
-   fly deploy --config fly.server.toml
-   fly scale count 1 --app canutell-server   # matches live in memory: exactly one machine
+   fly deploy --config fly.agents.toml --ha=false   # one machine; private, no public address
+   fly deploy --config fly.server.toml --ha=false   # migrates first, then exactly one machine
+   fly status --app canutell-server                 # one machine, health check passing
    fly certs add api.canutell.com --app canutell-server   # prints the DNS records to create for `api`
    ```
 8. **(owner) Web on Vercel.** `vercel.json` at the repo root defines one service, `web` (`apps/web`,

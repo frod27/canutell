@@ -1,13 +1,19 @@
 # CANUTELL game server on Fly.io (docs/ALPHA.md). Deploy from the repo root:
 #   fly deploy --config fly.server.toml
 # Secrets (never in this file): fly secrets set --app canutell-server DATABASE_URL=… AGENT_SERVICE_SECRET=…
-# Matches live in memory: keep exactly ONE machine (fly scale count 1) and deploy outside game nights.
+# Matches live in memory: keep exactly ONE machine (deploy with --ha=false) and deploy outside game nights.
 
 app = "canutell-server"
 primary_region = "mad"
 
 [build]
   dockerfile = "apps/server/Dockerfile"
+
+# Apply pending migrations (supabase/migrations, bundled in the image) before each release goes live. The
+# server refuses to start with pending migrations, so without this the first deploy would never pass its
+# health check. Only approved, numbered migrations exist in the repo (CLAUDE.md).
+[deploy]
+  release_command = "node dist/db-cli.mjs migrate"
 
 [env]
   PORT = "8787"
