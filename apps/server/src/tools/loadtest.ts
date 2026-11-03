@@ -13,6 +13,8 @@ import {
   createAccount,
   createInvite,
   createSession,
+  createStudioAgent,
+  listMyAgents,
   formatOpsReport,
   opsReport,
   integrityApplies,
@@ -31,6 +33,7 @@ import {
   ModeSchema,
   type ClientEnv,
   type Mode,
+  type StudioConfig,
   type ServerMessage,
   type TrustLevel,
 } from '@canutell/protocol';
@@ -96,9 +99,12 @@ function parse() {
       store: { type: 'string', default: 'memory' },
       agents: { type: 'string', default: 'scripted' },
       alpha: { type: 'boolean', default: false },
+      studio: { type: 'boolean', default: false },
     },
   });
   if (values.alpha && values.store !== 'postgres') throw new Error('--alpha needs --store postgres');
+  if (values.studio && (values.store !== 'postgres' || values.agents !== 'python'))
+    throw new Error('--studio needs --store postgres and --agents python');
   if (values.agents !== 'scripted' && values.agents !== 'python')
     throw new Error('--agents must be scripted or python');
   if (values.store !== 'memory' && values.store !== 'postgres')
@@ -114,6 +120,7 @@ function parse() {
     store: values.store as 'memory' | 'postgres',
     agents: values.agents as 'scripted' | 'python',
     alpha: values.alpha === true,
+    studio: values.studio === true,
   };
 }
 
@@ -171,6 +178,9 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
     reveals,
     spawnBot: (args) => launch(args.url, args.token, undefined),
     agentSeater: agentService?.seater,
+    agentServiceSecret: agentService?.secret,
+    // Agent Studio (Phase 7): half of public agent seats may go to the generated Studio agents.
+    studio: { enabled: o.studio, share: STUDIO_SHARE },
     formationDelayMs: 0, // throughput; the delay's own guarantee is tested in server.test.ts
   });
 
@@ -181,6 +191,37 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   if (o.alpha) await auditGuestRefused(server.url, fail);
   // Invites in groups of 10, like friends inviting friends (the ops report counts shared-invite matches).
   let invite: { code: string; left: number } | null = null;
+  const nextAccount = async (): Promise<LoadAccount> => {
+    if (o.alpha && !invite?.left) {
+      const { code } = await createInvite(sql!, { label: `load test ${mode}`, maxUses: 10, now: Date.now() });
+      invite = { code, left: 10 };
+    }
+    if (invite) invite.left--;
+    const a = await makeAccount(sql!, accounts.size, o.alpha ? invite!.code : undefined);
+    accounts.set(a.playerId, a);
+    return a;
+  };
+  // Studio makers (T2 accounts) each make one agent before play starts, then play as humans too, so the
+  // maker-exclusion rule is exercised. Accounts made along the way that can't make agents (T1) play first.
+  const makers: LoadAccount[] = [];
+  const spare: LoadAccount[] = [];
+  if (o.studio) {
+    while (makers.length < STUDIO_AGENTS) {
+      const a = await nextAccount();
+      if (a.trust !== 'T2') {
+        spare.push(a);
+        continue;
+      }
+      await createStudioAgent(sql!, {
+        ownerId: a.playerId,
+        name: `${mode}Agent${makers.length}`,
+        config: studioConfigFor(makers.length),
+        now: Date.now(),
+      });
+      makers.push(a);
+    }
+  }
+  const pendingMakers = [...makers];
   const humans: BotClient[] = [];
   const unseated = () => humans.filter((b) => b.seatedMatchId === null).length;
   while (server.stats().matchesStarted < o.matches) {
@@ -190,17 +231,7 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
       continue;
     }
     if (sql && (o.alpha || humans.length % 2 === 0)) {
-      if (o.alpha && !invite?.left) {
-        const { code } = await createInvite(sql, {
-          label: `load test ${mode}`,
-          maxUses: 10,
-          now: Date.now(),
-        });
-        invite = { code, left: 10 };
-      }
-      if (invite) invite.left--;
-      const a = await makeAccount(sql, accounts.size, o.alpha ? invite!.code : undefined);
-      accounts.set(a.playerId, a);
+      const a = pendingMakers.shift() ?? spare.shift() ?? (await nextAccount());
       humans.push(launch(server.url, a.session, mode, a.env ? CLEAN_ENV : undefined));
     } else humans.push(launch(server.url, null, mode));
     await sleep(2);
@@ -241,6 +272,7 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
     for (const m of store.matches.values()) await auditDatabase(sql, m, fail);
     await auditAccounts(sql, [...store.matches.values()], clients, accounts, fail, o.alpha);
     if (o.alpha) await auditOpsReport(sql, [...store.matches.keys()], fail);
+    if (o.studio) await auditStudio(sql, [...store.matches.values()], accounts, fail, makers.length);
     await sql.close();
   }
 
@@ -262,7 +294,7 @@ const AGENTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..
 const AGENT_MIN_REACTION_MS = 1_200;
 
 /** Start the real Python agent service on a free port. */
-async function startAgentService(): Promise<{ seater: AgentSeater; stop: () => void }> {
+async function startAgentService(): Promise<{ seater: AgentSeater; secret: string; stop: () => void }> {
   const secret = randomBytes(16).toString('hex');
   const child: ChildProcess = spawn('uv', ['run', '--quiet', 'python', '-m', 'canutell_agents'], {
     cwd: AGENTS_DIR,
@@ -279,6 +311,7 @@ async function startAgentService(): Promise<{ seater: AgentSeater; stop: () => v
   });
   return {
     seater: agentServiceSeater({ url: `http://127.0.0.1:${port}`, secret, timeoutMs: 5_000 }),
+    secret,
     stop: () => child.kill('SIGTERM'),
   };
 }
@@ -293,7 +326,7 @@ async function auditAgents(
     const id = m.meta.matchId;
     const agentSeats = new Set(m.meta.config.seats.filter((s) => s.isAgent).map((s) => s.seatId));
     for (const s of m.meta.config.seats) {
-      if (s.isAgent && s.agentVersion !== BASELINE_AGENT_VERSION)
+      if (s.isAgent && s.agentVersion !== BASELINE_AGENT_VERSION && !s.agentVersion?.startsWith('studio:'))
         fail('agent_version', `${id} seat ${s.seatId}: ${s.agentVersion}`);
     }
     if (m.meta.flags.includes('agent_fallback')) fail('agent_fallback', id);
@@ -633,6 +666,96 @@ async function auditOpsReport(sql: Sql, ids: string[], fail: (check: string, det
   accountChecks.sharedInviteMatches = row?.n ?? 0;
 }
 
+// ---------- Phase 7: Agent Studio ----------
+
+const STUDIO_AGENTS = 100;
+const STUDIO_SHARE = 0.5;
+
+function studioConfigFor(k: number): StudioConfig {
+  const t = (n: number) => ((k * 37 + n * 17) % 101) / 100;
+  return {
+    traits: {
+      cooperativeness: t(1),
+      reciprocity: t(2),
+      riskAppetite: t(3),
+      patience: t(4),
+      votePropensity: t(5),
+      chattiness: t(6),
+      randomness: t(7),
+    },
+    style: ['dry humour', 'short sentences', 'curious about everyone', ''][k % 4]!,
+  };
+}
+
+const studioChecks = { agents: 0, publicSeats: 0, studioSeats: 0 };
+
+/**
+ * SPEC §Agents, Studio: about `share` of public agent seats go to Studio agents; a maker is never seated
+ * with their own agent; an agent takes at most one seat per match; flags match the seats; makers see
+ * aggregates only; agent seats never reach the training pool.
+ */
+async function auditStudio(
+  sql: Sql,
+  matches: StoredMatch[],
+  accounts: Map<string, LoadAccount>,
+  fail: (check: string, detail: string) => void,
+  made: number,
+): Promise<void> {
+  const owners = new Map(
+    (
+      await sql.query<{ agent_version: string; owner_id: string; agent_id: number }>(
+        `select v.agent_version, sa.owner_id, sa.agent_id from agent_versions v
+           join studio_agents sa on sa.agent_id = v.studio_agent_id`,
+      )
+    ).map((r) => [r.agent_version, { owner: r.owner_id, agentId: Number(r.agent_id) }]),
+  );
+  const ids = new Set(matches.map((m) => m.meta.matchId));
+  studioChecks.agents = made; // this mode's agents (the database also holds earlier modes')
+  for (const m of matches) {
+    const id = m.meta.matchId;
+    const seats = m.meta.config.seats.filter((s) => s.isAgent);
+    const studio = seats.filter((s) => s.agentVersion?.startsWith('studio:'));
+    if (!m.meta.isParty)
+      for (const s of seats) {
+        if (s.agentVersion === BASELINE_AGENT_VERSION) studioChecks.publicSeats++;
+        else if (s.agentVersion?.startsWith('studio:')) {
+          studioChecks.publicSeats++;
+          studioChecks.studioSeats++;
+        }
+      }
+    if (m.meta.flags.includes('studio_agents') !== studio.length > 0)
+      fail('studio_flag', `${id}: ${studio.length} studio seats, flags ${m.meta.flags.join(',')}`);
+    const humans = new Set(m.meta.occupants.filter((o) => o.kind === 'human').map((o) => o.playerId));
+    const seen = new Set<number>();
+    for (const s of studio) {
+      const o = owners.get(s.agentVersion!);
+      if (!o) {
+        fail('studio_unknown', `${id}: ${s.agentVersion}`);
+        continue;
+      }
+      if (humans.has(o.owner)) fail('studio_maker_seated', `${id}: a maker was seated with their own agent`);
+      if (seen.has(o.agentId)) fail('studio_twice', `${id}: one agent took two seats`);
+      seen.add(o.agentId);
+    }
+  }
+  // About STUDIO_SHARE of public agent seats, within 4 standard deviations.
+  const n = studioChecks.publicSeats;
+  const p = n > 0 ? studioChecks.studioSeats / n : 0;
+  if (n < 50 || Math.abs(p - STUDIO_SHARE) > 4 * Math.sqrt((STUDIO_SHARE * (1 - STUDIO_SHARE)) / n))
+    fail('studio_share', `${studioChecks.studioSeats}/${n} public agent seats were Studio agents`);
+  const leaked = await sql.query<{ match_id: string }>(
+    `select t.match_id from training_seats t join seats s using (match_id, seat_id) where s.is_agent`,
+  );
+  if (leaked.some((r) => ids.has(r.match_id)))
+    fail('studio_training', 'an agent seat is in the training pool');
+  const maker = [...accounts.values()].find((a) => [...owners.values()].some((o) => o.owner === a.playerId));
+  if (maker) {
+    const mine = await listMyAgents(sql, maker.playerId, Date.now());
+    if (/p_[0-9a-f]{8}|"seat|[0-9a-f]{8}-[0-9a-f]{4}-/.test(JSON.stringify(mine)))
+      fail('studio_privacy', 'a maker’s view carries ids');
+  }
+}
+
 /** Every seated human can reopen their reveal over HTTP; nobody else can. */
 async function auditRevealEndpoint(
   url: string,
@@ -780,8 +903,17 @@ async function main(): Promise<number> {
     }
     if (o.agents === 'python') {
       console.log(
-        `  agents: baseline-1 in every agent seat; ${agentChecks.chatLines} agent chat lines safety-checked`,
+        `  agents: baseline-1 or a Studio version in every agent seat; ${agentChecks.chatLines} agent chat lines safety-checked`,
       );
+    }
+    if (o.studio) {
+      const c = studioChecks;
+      console.log(
+        `  studio: ${c.agents} player-made agents; ${c.studioSeats} of ${c.publicSeats} public agent seats ` +
+          `(${Math.round((100 * c.studioSeats) / Math.max(1, c.publicSeats))}%) played by Studio agents; ` +
+          'no maker seated with their own agent; no agent seat in the training pool',
+      );
+      c.agents = c.publicSeats = c.studioSeats = 0;
     }
     console.log(`  VIOLATIONS: ${r.violations.length}${r.violations.length === 0 ? '  ✓' : '  ✗'}`);
     for (const [check, v] of Object.entries(byCheck)) console.log(`    ${check}: ${v.n}  e.g. ${v.eg}`);

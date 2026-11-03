@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import type { RevealSource } from '@canutell/db';
 import {
+  AI_DISCLOSURE,
   ServerMessageSchema,
   type ClientMessage,
   type MatchRevealResponse,
@@ -152,7 +153,7 @@ describe('matchmaking over sockets', () => {
     const players = await fullQueue(t);
     const found = await Promise.all(players.map((p) => p.c.wait('match.found')));
     expect(new Set(found.map((f) => f.seat)).size).toBe(4);
-    for (const f of found) expect(f.disclosure).toBe('This match may contain AI players.');
+    for (const f of found) expect(f.disclosure).toBe(AI_DISCLOSURE);
     expect(t.spawned).toEqual(['agent', 'agent']);
   });
 

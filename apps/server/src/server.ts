@@ -1,12 +1,21 @@
-import { randomBytes, randomInt, randomUUID } from 'node:crypto';
-import { createServer, type Server, type ServerResponse } from 'node:http';
+import { randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { BotClient, POLICY_NAMES } from '@canutell/bots';
-import { trustLevels, type RevealSource, type Sql, type StoredClientEnv } from '@canutell/db';
+import {
+  eligibleStudioVersions,
+  ownAgentForParty,
+  recordStrike,
+  trustLevels,
+  type RevealSource,
+  type Sql,
+  type StoredClientEnv,
+} from '@canutell/db';
+import { StudioApi } from './studio-api';
 import { AccountsApi, type PasskeyCeremonies } from './accounts-api';
 import { nextGameNights, type GameNightRule } from './game-nights';
-import type { AgentSeater } from './agent-service';
+import { BASELINE_AGENT_VERSION, type AgentSeater } from './agent-service';
 import {
   AI_DISCLOSURE,
   ClientMessageSchema,
@@ -22,7 +31,7 @@ import {
 } from '@canutell/protocol';
 import type { Clock } from './clock';
 import { MatchRunner, type SeatLink } from './match-runner';
-import { Matchmaker, type MatchRequest, type Party, type Random } from './matchmaking';
+import { Matchmaker, type MatchRequest, type Party, type PartyAgent, type Random } from './matchmaking';
 import type { MatchFlag, MatchMeta, MatchStore, SeatOccupant } from './store';
 
 /**
@@ -79,6 +88,14 @@ export interface GameServerOptions {
   gameNights?: readonly GameNightRule[];
   /** The WebSocket URL agents use to reach this server (e.g. over a private network). Default: its own URL. */
   agentCallbackUrl?: string;
+  /**
+   * Agent Studio (Phase 7; SPEC §Agents, Studio). `enabled`: player-made agents may take public agent seats
+   * and join private parties. `share`: the chance each public agent seat goes to a Studio agent (default 0.5;
+   * the rest stay baseline-1, the control). Needs accounts and the agent service.
+   */
+  studio?: { enabled: boolean; share?: number };
+  /** The agent service's shared secret; authenticates its strike reports (POST /internal/agent-strikes). */
+  agentServiceSecret?: string;
   /**
    * Seats agents from the agent service (services/agents). Without it — or when it fails for a seat — that
    * seat gets a scripted bot (`scripted-0`), and a failure is flagged `agent_fallback`.
@@ -148,6 +165,17 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         },
       })
     : null;
+  const studioApi = o.accounts
+    ? new StudioApi({
+        sql: o.accounts.sql,
+        resolve: (t) => accounts!.resolve(t),
+        now: o.accounts.now,
+        log,
+      })
+    : null;
+  const studioOn = (): boolean => Boolean(o.studio?.enabled && o.accounts && o.agentSeater);
+  /** Studio seats by bot token, for strike reports (which may arrive just after the match ends). */
+  const studioSeats = new Map<string, { matchId: string; agentVersion: string }>();
   let matchesStarted = 0;
   let invalidFrames = 0;
   let url = '';
@@ -221,28 +249,63 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
     const agentVersion = new Map<Player, string>();
     const agentFlags = new Set<MatchFlag>();
     const scripted: Player[] = [];
+    const agentBots = bots.filter((b) => b.kind === 'agent');
+    // Which agent seats go to Studio agents (SPEC §Agents, Studio): in a private party, the maker's own
+    // agent; in a public match, each seat with probability `share`, drawn from eligible agents whose makers
+    // are not in this match. Decided inside the constant formation delay, like agent seating itself.
+    const chooseStudio = (async (): Promise<Map<Player, PartyAgent>> => {
+      const chosen = new Map<Player, PartyAgent>();
+      if (!studioOn() || agentBots.length === 0) return chosen;
+      if (req.partyAgent) {
+        chosen.set(agentBots[0]!, req.partyAgent);
+        return chosen;
+      }
+      if (req.isParty) return chosen;
+      const owners = roster.filter((p) => p.account).map((p) => p.playerId);
+      let pool = await eligibleStudioVersions(o.accounts!.sql, {
+        excludeOwners: owners,
+        now: Date.now(),
+      }).catch((e) => {
+        log(`match ${matchId}: studio eligibility failed, seating baseline agents: ${String(e)}`);
+        return [];
+      });
+      const share = Math.round((o.studio?.share ?? 0.5) * 1000);
+      for (const b of agentBots) {
+        if (pool.length === 0) break;
+        if (random.int(1000) >= share) continue; // a control seat: baseline-1
+        const pick = pool[random.int(pool.length)]!;
+        pool = pool.filter((v) => v.agentId !== pick.agentId); // one seat per agent per match
+        chosen.set(b, pick);
+      }
+      return chosen;
+    })();
     const settle = new Promise<void>((resolve) => setTimeout(resolve, formationDelayMs));
+    let ownerPresent = false;
     await Promise.all([
       settle,
-      ...bots
-        .filter((b) => b.kind === 'agent')
-        .map(async (b) => {
-          const seat = o.agentSeater
-            ? await o.agentSeater({
-                serverUrl: o.agentCallbackUrl ?? url,
-                token: b.token,
-                clockSpeed: clock.speed,
-              })
-            : null;
-          if (seat) {
-            agentVersion.set(b, seat.agentVersion);
-            for (const f of seat.flags) agentFlags.add(f as MatchFlag);
-          } else {
-            agentVersion.set(b, SCRIPTED_AGENT_VERSION);
-            scripted.push(b);
-            if (o.agentSeater) agentFlags.add('agent_fallback');
-          }
-        }),
+      ...agentBots.map(async (b) => {
+        const studio = (await chooseStudio).get(b);
+        const seat = o.agentSeater
+          ? await o.agentSeater({
+              serverUrl: o.agentCallbackUrl ?? url,
+              token: b.token,
+              clockSpeed: clock.speed,
+              ...(studio ? { studio: { agentVersion: studio.agentVersion, config: studio.config } } : {}),
+            })
+          : null;
+        if (seat && studio) {
+          studioSeats.set(b.token, { matchId, agentVersion: seat.agentVersion });
+          if (req.partyAgent) ownerPresent = true;
+        }
+        if (seat) {
+          agentVersion.set(b, seat.agentVersion);
+          for (const f of seat.flags) agentFlags.add(f as MatchFlag);
+        } else {
+          agentVersion.set(b, SCRIPTED_AGENT_VERSION);
+          scripted.push(b);
+          if (o.agentSeater) agentFlags.add('agent_fallback');
+        }
+      }),
     ]);
     const config: MatchConfig = {
       matchId,
@@ -275,7 +338,10 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
     // Alpha matches are the first real data: a cohort label, no build-phase flag.
     const flags: MatchFlag[] = [o.alpha ? 'alpha' : BUILD_PHASE_FLAG];
     if (scripted.length > 0) flags.push('scripted_agents');
-    if ([...agentVersion.values()].some((v) => v !== SCRIPTED_AGENT_VERSION)) flags.push('baseline_agents');
+    const versions = [...agentVersion.values()];
+    if (versions.some((v) => v === BASELINE_AGENT_VERSION)) flags.push('baseline_agents');
+    if (versions.some((v) => v.startsWith('studio:'))) flags.push('studio_agents');
+    if (ownerPresent) flags.push('owner_present');
     for (const f of [...agentFlags].sort()) flags.push(f);
     if (req.fillers > 0) flags.push('bot_fill');
     if (clock.speed !== 1) flags.push('sped_up');
@@ -372,6 +438,7 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         code: party.code,
         mode: party.mode,
         members: party.members.length,
+        agent: party.agent?.name ?? null,
         isHost: party.host === id,
         canStart: party.host === id && matchmaker.canStart(party),
         disclosure: AI_DISCLOSURE,
@@ -410,6 +477,8 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
     if (path === '/api/game-nights' && req.method === 'GET')
       return reply(res, 200, o.gameNights ? nextGameNights(o.gameNights, Date.now()) : null);
     if (accounts?.handle(req, res, path, (status, body) => reply(res, status, body))) return;
+    if (studioApi?.handle(req, path, (status, body) => reply(res, status, body))) return;
+    if (path === '/internal/agent-strikes' && req.method === 'POST') return strike(req, res);
     if (path.startsWith('/api/auth/') || path === '/api/me' || path.startsWith('/api/me/'))
       return reply(res, 501, { error: 'accounts need the database' });
     const m = /^\/api\/matches\/([A-Za-z0-9-]{1,128})\/reveal$/.exec(path);
@@ -440,6 +509,50 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
     }
     reply(res, 404, { error: 'not found' });
   });
+  /**
+   * The agent service reports each line its safety filter blocked for a Studio seat (SPEC §Agents, Studio:
+   * three strikes pause the agent). Authenticated with the agent service's secret; identified by the seat
+   * token the server itself issued.
+   */
+  const strike = (req: IncomingMessage, res: ServerResponse) => {
+    const secret = o.agentServiceSecret;
+    const given = String(req.headers['x-agent-secret'] ?? '');
+    if (
+      !secret ||
+      !o.accounts ||
+      given.length !== secret.length ||
+      !timingSafeEqual(Buffer.from(given), Buffer.from(secret))
+    )
+      return reply(res, 403, { error: 'forbidden' });
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.length < 8 && chunks.push(c));
+    req.on('end', () => {
+      let body: { token?: unknown; agentVersion?: unknown; reason?: unknown };
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      } catch {
+        return reply(res, 400, { error: 'invalid_json' });
+      }
+      const seat = typeof body.token === 'string' ? studioSeats.get(body.token) : undefined;
+      if (!seat || seat.agentVersion !== body.agentVersion) return reply(res, 404, { error: 'not_found' });
+      recordStrike(o.accounts!.sql, {
+        agentVersion: seat.agentVersion,
+        matchId: seat.matchId,
+        reason: typeof body.reason === 'string' ? body.reason : 'blocked',
+        now: Date.now(),
+      }).then(
+        (r) => {
+          if (r.paused) log(`studio agent ${seat.agentVersion} paused after repeated blocked lines`);
+          reply(res, 204);
+        },
+        (e) => {
+          log(`strike for ${seat.agentVersion} failed: ${String(e)}`);
+          reply(res, 500, { error: 'internal_error' });
+        },
+      );
+    });
+  };
+
   const wss = new WebSocketServer({ server: http, maxPayload: MAX_PAYLOAD });
 
   wss.on('connection', (ws, req) => {
@@ -617,6 +730,32 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       case 'party.start': {
         const r = matchmaker.startParty(p.playerId);
         if (r) error('party', r);
+        return;
+      }
+      case 'party.agent': {
+        // "Play with your agent" (SPEC §Agents, Studio): only the maker's own active agent.
+        if (!p.account || !studioOn()) return error('party', 'Studio agents are not available');
+        if (msg.agentId === null) {
+          const r = matchmaker.setPartyAgent(p.playerId, null);
+          if (r) error('party', r);
+          return;
+        }
+        void ownAgentForParty(o.accounts!.sql, p.playerId, msg.agentId).then(
+          (a) => {
+            if (!a) return error('party', 'that is not one of your active agents');
+            const r = matchmaker.setPartyAgent(p.playerId, {
+              ownerId: p.playerId,
+              name: a.name,
+              agentVersion: a.agentVersion,
+              config: a.config,
+            });
+            if (r) error('party', r);
+          },
+          (e) => {
+            log(`party.agent failed: ${String(e)}`);
+            error('party', 'could not add the agent');
+          },
+        );
         return;
       }
       case 'action': {

@@ -1,4 +1,4 @@
-import { MAX_AGENTS, PARTY_CODE_LENGTH, SEAT_COUNT, type Mode } from '@canutell/protocol';
+import { MAX_AGENTS, PARTY_CODE_LENGTH, SEAT_COUNT, type Mode, type StudioConfig } from '@canutell/protocol';
 import type { Clock, TimerHandle } from './clock';
 
 // SPEC §Match structure: 6 seats, 0–2 agents with configurable odds. The agent count for the next
@@ -13,6 +13,16 @@ export interface MatchRequest {
   /** Bots sitting in human seats (dev fill only). */
   fillers: number;
   isParty: boolean;
+  /** "Play with your agent" (Phase 7): a member's own Studio agent takes one of the party's agent seats. */
+  partyAgent?: PartyAgent;
+}
+
+/** A Studio agent a party member added to their party (SPEC §Agents, Studio). */
+export interface PartyAgent {
+  ownerId: string;
+  name: string;
+  agentVersion: string;
+  config: StudioConfig;
 }
 
 export interface Random {
@@ -36,6 +46,7 @@ export interface Party {
   mode: Mode;
   host: string;
   members: string[];
+  agent: PartyAgent | null;
 }
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I
@@ -133,7 +144,7 @@ export class Matchmaker {
         () => CODE_ALPHABET[this.o.random.int(CODE_ALPHABET.length)],
       ).join('');
     } while (this.parties.has(code));
-    const party: Party = { code, mode, host, members: [host] };
+    const party: Party = { code, mode, host, members: [host], agent: null };
     this.parties.set(code, party);
     this.partyOf.set(host, code);
     this.o.onPartyChange(party);
@@ -163,7 +174,24 @@ export class Matchmaker {
       return;
     }
     party.members = party.members.filter((m) => m !== playerId);
+    if (party.agent?.ownerId === playerId) party.agent = null; // an agent leaves with its maker
     this.o.onPartyChange(party);
+  }
+
+  /** Add (or with null, remove) the sender's own Studio agent to their party. */
+  setPartyAgent(playerId: string, agent: PartyAgent | null): string | null {
+    const code = this.partyOf.get(playerId);
+    const party = code ? this.parties.get(code) : undefined;
+    if (!party) return 'not in a party';
+    if (agent === null) {
+      if (party.agent?.ownerId === playerId) party.agent = null;
+    } else {
+      if (party.agent && party.agent.ownerId !== playerId) return 'another member already added an agent';
+      if (party.members.length >= SEAT_COUNT) return 'a full party has no seat for an agent';
+      party.agent = agent;
+    }
+    this.o.onPartyChange(party);
+    return null;
   }
 
   /** Humans needed for a party to start without dev fill. */
@@ -186,9 +214,18 @@ export class Matchmaker {
     if (!this.canStart(party)) return `a party needs at least ${Matchmaker.MIN_PARTY} players`;
     const humans = [...party.members];
     const agents = Math.min(MAX_AGENTS, SEAT_COUNT - humans.length);
+    if (party.agent && agents === 0) return 'a full party has no seat for the added agent';
     const fillers = SEAT_COUNT - humans.length - agents;
+    const partyAgent = party.agent ?? undefined;
     this.closeParty(party, 'started');
-    this.o.onMatch({ mode: party.mode, humans, agents, fillers, isParty: true });
+    this.o.onMatch({
+      mode: party.mode,
+      humans,
+      agents,
+      fillers,
+      isParty: true,
+      ...(partyAgent ? { partyAgent } : {}),
+    });
     return null;
   }
 

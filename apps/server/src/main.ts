@@ -33,6 +33,10 @@ import { JsonlStore, type MatchStore } from './store';
 //   ALPHA=1            flag matches `alpha` (research-eligible) instead of the build phase
 //   GAME_NIGHTS        e.g. "Tue,Thu,Sun 20:00-22:00 Europe/Madrid" (shown in the lobby)
 //   AGENT_CALLBACK_URL the WebSocket URL agents use to reach this server (e.g. ws://canutell-server.internal:8787)
+//   Agent Studio (Phase 7; docs/proposals/phase-7.md):
+//   STUDIO=1           player-made agents take public agent seats and join private parties (needs
+//                      DATABASE_URL and the agent service). Makers can build agents whether or not it is on.
+//   STUDIO_SHARE       chance each public agent seat goes to a Studio agent (default 0.5; the rest are baseline-1)
 
 const env = process.env;
 const speed = Number(env.CLOCK_SPEED ?? 1);
@@ -108,6 +112,17 @@ if (flag('ALPHA') && fill !== null) {
   process.exit(1);
 }
 const gameNights = env.GAME_NIGHTS ? parseGameNights(env.GAME_NIGHTS) : undefined;
+const studioShare = env.STUDIO_SHARE === undefined ? 0.5 : Number(env.STUDIO_SHARE);
+if (!(studioShare >= 0 && studioShare <= 1)) {
+  console.error('STUDIO_SHARE must be between 0 and 1');
+  process.exit(1);
+}
+if (flag('STUDIO') && (!accounts || !agentSeater)) {
+  console.error('STUDIO needs DATABASE_URL and the agent service (AGENT_SERVICE_URL, AGENT_SERVICE_SECRET)');
+  process.exit(1);
+}
+if (flag('STUDIO'))
+  log(`agent studio on: ${Math.round(studioShare * 100)}% of public agent seats may be Studio agents`);
 if (flag('ALPHA'))
   log(
     `closed alpha: accounts only ${flag('ACCOUNTS_ONLY')}, invites ${flag('INVITES_REQUIRED')}, ` +
@@ -121,6 +136,8 @@ const server = await startGameServer({
   alpha: flag('ALPHA'),
   gameNights,
   agentCallbackUrl: env.AGENT_CALLBACK_URL,
+  agentServiceSecret: env.AGENT_SERVICE_SECRET,
+  studio: { enabled: flag('STUDIO'), share: studioShare },
   agentSeater,
   clock,
   store,

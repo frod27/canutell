@@ -1,8 +1,10 @@
 import { z } from 'zod';
+import type { StudioConfig } from '@canutell/protocol';
 
 // Client for the Python agent service (services/agents). For each agent seat the server POSTs
-// {serverUrl, token, agentVersion, clockSpeed}; the service then connects over the public WebSocket protocol
-// with that token, like any player (CLAUDE.md invariant 15). Nothing about the match is sent.
+// {serverUrl, token, agentVersion, clockSpeed, studio?}; the service then connects over the public WebSocket
+// protocol with that token, like any player (CLAUDE.md invariant 15). Nothing about the match is sent. A
+// Studio seat (Phase 7) also carries its maker's traits and style hint.
 
 export const BASELINE_AGENT_VERSION = 'baseline-1';
 
@@ -22,6 +24,8 @@ export type AgentSeater = (args: {
   serverUrl: string;
   token: string;
   clockSpeed: number;
+  /** A Studio agent's version and config; without it the seat plays the service's baseline version. */
+  studio?: { agentVersion: string; config: StudioConfig };
 }) => Promise<AgentSeat | null>;
 
 /**
@@ -36,12 +40,19 @@ export function agentServiceSeater(opts: {
   log?: (msg: string) => void;
 }): AgentSeater {
   const version = opts.agentVersion ?? BASELINE_AGENT_VERSION;
-  return async ({ serverUrl, token, clockSpeed }) => {
+  return async ({ serverUrl, token, clockSpeed, studio }) => {
+    const want = studio?.agentVersion ?? version;
     try {
       const res = await fetch(`${opts.url.replace(/\/$/, '')}/seats`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-agent-secret': opts.secret },
-        body: JSON.stringify({ serverUrl, token, agentVersion: version, clockSpeed }),
+        body: JSON.stringify({
+          serverUrl,
+          token,
+          agentVersion: want,
+          clockSpeed,
+          ...(studio ? { studio: { config: studio.config } } : {}),
+        }),
         signal: AbortSignal.timeout(opts.timeoutMs ?? 2_000),
       });
       if (!res.ok) {
@@ -49,7 +60,7 @@ export function agentServiceSeater(opts: {
         return null;
       }
       const body = SeatResponseSchema.safeParse(await res.json());
-      if (!body.success || body.data.agentVersion !== version) {
+      if (!body.success || body.data.agentVersion !== want) {
         opts.log?.('agent service answered with an unexpected body');
         return null;
       }
