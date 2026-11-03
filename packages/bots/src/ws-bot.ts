@@ -35,6 +35,8 @@ export interface BotClientOptions {
   onFrame?: (msg: ServerMessage) => void;
   /** Report this environment after the welcome, as the web client does (integrity signals, load tests). */
   env?: ClientEnv;
+  /** Extra handshake headers (the load test sends a client IP header to exercise rate limits). */
+  headers?: Record<string, string>;
 }
 
 export interface BotResult {
@@ -81,7 +83,7 @@ export class BotClient {
   /** Resolves when the bot has seen Reveal, or its socket closes. */
   run(): Promise<BotResult> {
     return new Promise((resolve) => {
-      const ws = new WebSocket(this.o.url);
+      const ws = new WebSocket(this.o.url, this.o.headers ? { headers: this.o.headers } : {});
       this.ws = ws;
       ws.on('open', () => this.send({ type: 'hello', token: this.o.token }));
       ws.on('message', (data) => {

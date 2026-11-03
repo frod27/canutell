@@ -40,6 +40,7 @@ import {
 import type { PasskeyCeremonies } from '../accounts-api';
 import { auditMatch, type Violation } from '@canutell/sim';
 import { ScaledClock } from '../clock';
+import { parseRateLimits } from '../rate-limit';
 import { startGameServer } from '../server';
 import { MemoryStore, type StoredMatch } from '../store';
 import { BASELINE_AGENT_VERSION, agentServiceSeater, type AgentSeater } from '../agent-service';
@@ -79,6 +80,9 @@ import { BASELINE_AGENT_VERSION, agentServiceSeater, type AgentSeater } from '..
 //   • every non-timeout agent decision carries a confidence annotation; human seats never do
 //   • every agent response took at least the human minimum, as measured by the server (invariant 14)
 //   • every agent chat line passes the agent safety filter (invariant 13)
+//
+// With --limits (needs --alpha), the production rate limits are on and each account connects from its own
+// client IP (as behind Fly's proxy): normal play must never be refused (docs/proposals/hardening.md).
 
 const ROLE_LEAK = /isAgent|agentVersion|agentCount|scripted-0|targetIsAgent/;
 
@@ -100,11 +104,13 @@ function parse() {
       agents: { type: 'string', default: 'scripted' },
       alpha: { type: 'boolean', default: false },
       studio: { type: 'boolean', default: false },
+      limits: { type: 'boolean', default: false },
     },
   });
   if (values.alpha && values.store !== 'postgres') throw new Error('--alpha needs --store postgres');
   if (values.studio && (values.store !== 'postgres' || values.agents !== 'python'))
     throw new Error('--studio needs --store postgres and --agents python');
+  if (values.limits && !values.alpha) throw new Error('--limits needs --alpha (one client IP per account)');
   if (values.agents !== 'scripted' && values.agents !== 'python')
     throw new Error('--agents must be scripted or python');
   if (values.store !== 'memory' && values.store !== 'postgres')
@@ -121,8 +127,22 @@ function parse() {
     agents: values.agents as 'scripted' | 'python',
     alpha: values.alpha === true,
     studio: values.studio === true,
+    limits: values.limits === true,
   };
 }
+
+const LIMITS_IP_HEADER = 'x-loadtest-ip';
+const ips = new Map<string, string>();
+/** A stable documentation-range client IP per account (RFC 5737 / 2544 style ranges). */
+const ipFor = (playerId: string): string => {
+  let ip = ips.get(playerId);
+  if (!ip) {
+    const n = ips.size + 1;
+    ip = `198.18.${(n >> 8) & 255}.${n & 255}`;
+    ips.set(playerId, ip);
+  }
+  return ip;
+};
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -139,7 +159,13 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   const pending: Promise<unknown>[] = [];
   let seq = 0;
 
-  const launch = (url: string, token: string | null, queue: Mode | undefined, env?: ClientEnv) => {
+  const launch = (
+    url: string,
+    token: string | null,
+    queue: Mode | undefined,
+    env?: ClientEnv,
+    ip?: string,
+  ) => {
     const log: ClientLog = { frames: [], result: null };
     clients.push(log);
     const bot = new BotClient({
@@ -152,6 +178,7 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
       timeoutPct: o.timeoutPct,
       onFrame: (f) => log.frames.push(f),
       env,
+      headers: ip ? { [LIMITS_IP_HEADER]: ip } : undefined,
     });
     pending.push(bot.run().then((r) => (log.result = r)));
     return bot;
@@ -182,6 +209,9 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
     // Agent Studio (Phase 7): half of public agent seats may go to the generated Studio agents.
     studio: { enabled: o.studio, share: STUDIO_SHARE },
     formationDelayMs: 0, // throughput; the delay's own guarantee is tested in server.test.ts
+    // Hardening: the production limits, with each account on its own client IP (as behind Fly's proxy).
+    rateLimits: o.limits ? parseRateLimits(undefined) : null,
+    clientIpHeader: o.limits ? LIMITS_IP_HEADER : undefined,
   });
 
   const started = performance.now();
@@ -232,7 +262,8 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
     }
     if (sql && (o.alpha || humans.length % 2 === 0)) {
       const a = pendingMakers.shift() ?? spare.shift() ?? (await nextAccount());
-      humans.push(launch(server.url, a.session, mode, a.env ? CLEAN_ENV : undefined));
+      const ip = o.limits ? ipFor(a.playerId) : undefined;
+      humans.push(launch(server.url, a.session, mode, a.env ? CLEAN_ENV : undefined, ip));
     } else humans.push(launch(server.url, null, mode));
     await sleep(2);
   }
@@ -240,6 +271,9 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
   await sleep(200);
   for (const b of humans) if (b.seatedMatchId === null) b.close();
   while (server.stats().matchesRunning > 0) await sleep(50);
+  const limited = server.stats().rateLimited;
+  if (o.limits && limited > 0)
+    fail('rate_limits', `${limited} request(s)/socket(s) refused during normal play`);
   await Promise.allSettled(pending);
   const seconds = (performance.now() - started) / 1000;
 
@@ -286,6 +320,7 @@ async function runMode(mode: Mode, o: ReturnType<typeof parse>) {
     rejections,
     violations,
     clients: clients.filter((c) => c.result?.matchId).length,
+    limited: o.limits ? { ips: ips.size, refused: limited } : null,
   };
 }
 
@@ -915,6 +950,10 @@ async function main(): Promise<number> {
       );
       c.agents = c.publicSeats = c.studioSeats = 0;
     }
+    if (r.limited)
+      console.log(
+        `  rate limits: production defaults on, ${r.limited.ips} client IPs so far; ${r.limited.refused} refused`,
+      );
     console.log(`  VIOLATIONS: ${r.violations.length}${r.violations.length === 0 ? '  ✓' : '  ✗'}`);
     for (const [check, v] of Object.entries(byCheck)) console.log(`    ${check}: ${v.n}  e.g. ${v.eg}`);
     console.log();

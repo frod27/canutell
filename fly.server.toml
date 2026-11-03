@@ -1,6 +1,7 @@
 # CANUTELL game server on Fly.io (docs/ALPHA.md). Deploy from the repo root:
 #   fly deploy --config fly.server.toml
 # Secrets (never in this file): fly secrets set --app canutell-server DATABASE_URL=… AGENT_SERVICE_SECRET=…
+#   and, for alerts, ALERT_WEBHOOK_URL=… (a Slack or Discord incoming webhook; docs/ALPHA.md §Alerts)
 # Matches live in memory: keep exactly ONE machine (deploy with --ha=false) and deploy outside game nights.
 
 app = "canutell-server"
@@ -32,6 +33,9 @@ primary_region = "mad"
   # baseline. Makers can build agents before that; they just aren't seated.
   STUDIO = "0"
   STUDIO_SHARE = "0.5"
+  # Rate limits are on by default (apps/server/src/rate-limit.ts). Fly's proxy sets Fly-Client-IP on public
+  # traffic; private-network traffic (the agent service) has no such header and is never limited.
+  CLIENT_IP_HEADER = "fly-client-ip"
 
 [http_service]
   internal_port = 8787

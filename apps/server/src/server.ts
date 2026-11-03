@@ -15,6 +15,8 @@ import {
 import { StudioApi } from './studio-api';
 import { AccountsApi, type PasskeyCeremonies } from './accounts-api';
 import { nextGameNights, type GameNightRule } from './game-nights';
+import { clientIp, RateLimiter, type RateRuleName, type RateRules } from './rate-limit';
+import type { Alert } from './alerts';
 import { BASELINE_AGENT_VERSION, type AgentSeater } from './agent-service';
 import {
   AI_DISCLOSURE,
@@ -107,6 +109,14 @@ export interface GameServerOptions {
    * whether the match has agents (CLAUDE.md invariant 7). Default: 2500 when an agentSeater is set, else 0.
    */
   formationDelayMs?: number;
+  /**
+   * Rate limits (docs/proposals/hardening.md §1). Off when absent (tests, load test). Keys are client IPs
+   * (`clientIpHeader`, e.g. `fly-client-ip`; see clientIp) and, for Studio writes, account ids.
+   */
+  rateLimits?: RateRules | null;
+  clientIpHeader?: string;
+  /** Operator alerts (docs/proposals/hardening.md §3). */
+  alert?: Alert;
 }
 
 interface Player {
@@ -133,7 +143,14 @@ export interface GameServer {
   url: string;
   port: number;
   runners: ReadonlyMap<string, MatchRunner>;
-  stats(): { matchesStarted: number; matchesRunning: number; connections: number; invalidFrames: number };
+  stats(): {
+    matchesStarted: number;
+    matchesRunning: number;
+    connections: number;
+    invalidFrames: number;
+    /** HTTP requests answered 429 and sockets closed 1013 by the rate limits. */
+    rateLimited: number;
+  };
   close(): Promise<void>;
 }
 
@@ -148,6 +165,9 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
   const clock = o.clock;
   const random = o.random ?? cryptoRandom;
   const log = o.log ?? (() => {});
+  const alert: Alert = o.alert ?? (() => {});
+  const limiter = o.rateLimits ? new RateLimiter(o.rateLimits) : null;
+  let closing = false;
   const players = new Map<string, Player>(); // by token
   const byId = new Map<string, Player>();
   const runners = new Map<string, MatchRunner>();
@@ -171,6 +191,7 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         resolve: (t) => accounts!.resolve(t),
         now: o.accounts.now,
         log,
+        limit: limiter?.take,
       })
     : null;
   const studioOn = (): boolean => Boolean(o.studio?.enabled && o.accounts && o.agentSeater);
@@ -178,6 +199,7 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
   const studioSeats = new Map<string, { matchId: string; agentVersion: string }>();
   let matchesStarted = 0;
   let invalidFrames = 0;
+  let rateLimited = 0;
   let url = '';
 
   const send = (player: Player, msg: ServerMessage): boolean => {
@@ -303,7 +325,13 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         } else {
           agentVersion.set(b, SCRIPTED_AGENT_VERSION);
           scripted.push(b);
-          if (o.agentSeater) agentFlags.add('agent_fallback');
+          if (o.agentSeater) {
+            agentFlags.add('agent_fallback');
+            alert(
+              'agent_fallback',
+              `the agent service didn't seat an agent; a scripted bot played (match ${matchId})`,
+            );
+          }
         }
       }),
     ]);
@@ -409,6 +437,8 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
   };
 
   const onEnd = (runner: MatchRunner, status: 'completed' | 'aborted') => {
+    if (status === 'aborted' && !closing)
+      alert('match_aborted', `match ${runner.matchId} aborted by a server error (see the server log)`);
     runners.delete(runner.matchId);
     const roster = rosters.get(runner.matchId) ?? [];
     rosters.delete(runner.matchId);
@@ -462,9 +492,28 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
     'access-control-allow-headers': 'authorization, content-type',
     'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
   };
-  const reply = (res: ServerResponse, status: number, body?: unknown) => {
-    res.writeHead(status, { ...cors, 'content-type': 'application/json', 'cache-control': 'no-store' });
+  const reply = (res: ServerResponse, status: number, body?: unknown, req?: IncomingMessage) => {
+    const retry = (body as { retryAfterMs?: unknown } | undefined)?.retryAfterMs;
+    res.writeHead(status, {
+      ...cors,
+      'content-type': 'application/json',
+      'cache-control': 'no-store',
+      ...(status === 429 && typeof retry === 'number'
+        ? { 'retry-after': String(Math.ceil(retry / 1000)) }
+        : {}),
+    });
     res.end(body === undefined ? '' : JSON.stringify(body));
+    if (status === 500 && req)
+      alert('http_500', `${req.method} ${(req.url ?? '').split('?')[0]} answered 500 (see the server log)`);
+  };
+  /** Which rate rule an HTTP request falls under (null: not limited). */
+  const httpRule = (method: string | undefined, path: string): RateRuleName | null => {
+    if (method === 'POST' && path === '/api/auth/register/options') return 'register';
+    if (method === 'POST' && path === '/api/auth/login/options') return 'login';
+    if (path === '/api/studio/leaderboard' || path === '/api/studio/names') return 'publicRead';
+    if (path === '/api/game-nights' || /^\/api\/matches\/[^/]+\/reveal$/.test(path)) return 'publicRead';
+    if (path.startsWith('/api/')) return 'account';
+    return null;
   };
   const http: Server = createServer((req, res) => {
     const path = (req.url ?? '').split('?')[0]!;
@@ -473,11 +522,20 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       return;
     }
     if (path === '/health') return reply(res, 200, { ok: true, matches: runners.size });
+    const rule = limiter ? httpRule(req.method, path) : null;
+    const ip = rule ? clientIp(req, o.clientIpHeader) : null;
+    if (rule && ip) {
+      const wait = limiter!.take(rule, ip);
+      if (wait > 0) {
+        rateLimited++;
+        return reply(res, 429, { error: 'rate_limited', retryAfterMs: wait });
+      }
+    }
     // Public and the same for everyone (also for visitors the closed alpha refuses a welcome).
     if (path === '/api/game-nights' && req.method === 'GET')
       return reply(res, 200, o.gameNights ? nextGameNights(o.gameNights, Date.now()) : null);
-    if (accounts?.handle(req, res, path, (status, body) => reply(res, status, body))) return;
-    if (studioApi?.handle(req, path, (status, body) => reply(res, status, body))) return;
+    if (accounts?.handle(req, res, path, (status, body) => reply(res, status, body, req))) return;
+    if (studioApi?.handle(req, path, (status, body) => reply(res, status, body, req))) return;
     if (path === '/internal/agent-strikes' && req.method === 'POST') return strike(req, res);
     if (path.startsWith('/api/auth/') || path === '/api/me' || path.startsWith('/api/me/'))
       return reply(res, 501, { error: 'accounts need the database' });
@@ -502,7 +560,7 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
           (r) => (r ? reply(res, 200, r) : reply(res, 404, { error: 'not found' })),
           (e) => {
             log(`reveal ${matchId} failed: ${String(e)}`);
-            reply(res, 500, { error: 'internal error' });
+            reply(res, 500, { error: 'internal error' }, req);
           },
         );
       return;
@@ -542,12 +600,18 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
         now: Date.now(),
       }).then(
         (r) => {
-          if (r.paused) log(`studio agent ${seat.agentVersion} paused after repeated blocked lines`);
+          if (r.paused) {
+            log(`studio agent ${seat.agentVersion} paused after repeated blocked lines`);
+            alert(
+              'studio_paused',
+              `Studio agent ${seat.agentVersion} was paused after repeated blocked lines (pnpm ops:studio show)`,
+            );
+          }
           reply(res, 204);
         },
         (e) => {
           log(`strike for ${seat.agentVersion} failed: ${String(e)}`);
-          reply(res, 500, { error: 'internal_error' });
+          reply(res, 500, { error: 'internal_error' }, req);
         },
       );
     });
@@ -556,6 +620,12 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
   const wss = new WebSocketServer({ server: http, maxPayload: MAX_PAYLOAD });
 
   wss.on('connection', (ws, req) => {
+    const ip = limiter ? clientIp(req, o.clientIpHeader) : null;
+    if (ip && limiter!.take('socket', ip) > 0) {
+      rateLimited++;
+      ws.close(1013, 'too many connections, try again in a minute');
+      return;
+    }
     let player: Player | null = null;
     // Reduced to a boolean at once; the user-agent string is never kept (SPEC §Integrity).
     const serverHeadlessUa = /HeadlessChrome/i.test(req.headers['user-agent'] ?? '');
@@ -792,8 +862,11 @@ export async function startGameServer(o: GameServerOptions): Promise<GameServer>
       matchesRunning: runners.size,
       connections: wss.clients.size,
       invalidFrames,
+      rateLimited,
     }),
     async close() {
+      closing = true;
+      limiter?.close();
       for (const r of [...runners.values()]) r.shutdown();
       for (const ws of wss.clients) ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));

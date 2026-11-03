@@ -8,6 +8,8 @@ import {
   type Sql,
 } from '@canutell/db';
 import { simpleWebAuthn } from './accounts-api';
+import { Alerts } from './alerts';
+import { parseRateLimits } from './rate-limit';
 import { parseGameNights } from './game-nights';
 import { agentServiceSeater } from './agent-service';
 import { ScaledClock } from './clock';
@@ -37,6 +39,12 @@ import { JsonlStore, type MatchStore } from './store';
 //   STUDIO=1           player-made agents take public agent seats and join private parties (needs
 //                      DATABASE_URL and the agent service). Makers can build agents whether or not it is on.
 //   STUDIO_SHARE       chance each public agent seat goes to a Studio agent (default 0.5; the rest are baseline-1)
+//   Hardening (docs/proposals/hardening.md):
+//   RATE_LIMITS        unset for the defaults (rate-limit.ts), `off`, or overrides like `register=20/1h,socket=60/1m`
+//   CLIENT_IP_HEADER   the header carrying the client IP, set by a trusted proxy (on Fly: fly-client-ip). Without
+//                      it the socket address is used, and loopback is never limited.
+//   ALERT_WEBHOOK_URL  a Slack or Discord incoming webhook for operator alerts (without it, alerts are only logged)
+//   ALERT_SOURCE       the name alerts start with (default: CANUTELL, or the Fly app name)
 
 const env = process.env;
 const speed = Number(env.CLOCK_SPEED ?? 1);
@@ -44,6 +52,19 @@ const fill = env.FILL_BOTS_MS ? Number(env.FILL_BOTS_MS) : null;
 const weights = (env.AGENT_WEIGHTS ?? '1,1,1').split(',').map(Number);
 const log = (m: string) => console.log(`[${new Date().toISOString()}] ${m}`);
 const clock = new ScaledClock(speed);
+const alerts = new Alerts({
+  webhookUrl: env.ALERT_WEBHOOK_URL || undefined,
+  source: env.ALERT_SOURCE ?? env.FLY_APP_NAME ?? 'CANUTELL',
+  log,
+});
+const alert = alerts.alert;
+let rateLimits;
+try {
+  rateLimits = parseRateLimits(env.RATE_LIMITS);
+} catch (e) {
+  console.error((e as Error).message);
+  process.exit(1);
+}
 
 let store: MatchStore;
 let reveals: RevealSource | undefined;
@@ -66,7 +87,13 @@ if (env.DATABASE_URL) {
   const aborted = await PostgresStore.recover(sql, clock.now());
   if (aborted > 0) log(`marked ${aborted} interrupted match(es) aborted`);
   store = new PostgresStore(sql, {
-    onError: (id, e) => log(`DB WRITE FAILED for match ${id}: ${String(e)}`),
+    onError: (id, e) => {
+      log(`DB WRITE FAILED for match ${id}: ${String(e)}`);
+      alert(
+        'db_write',
+        `a match log write to Postgres failed (match ${id}); data may be lost, check the server log`,
+      );
+    },
   });
   reveals = dbRevealSource(sql);
   log('match logs → Postgres');
@@ -147,14 +174,38 @@ const server = await startGameServer({
   agentWeights: weights,
   fillBotsAfterMs: fill,
   corsOrigin: env.CORS_ORIGIN,
+  rateLimits,
+  clientIpHeader: env.CLIENT_IP_HEADER || undefined,
+  alert,
   log,
 });
+log(
+  rateLimits
+    ? `rate limits on (client IP from ${env.CLIENT_IP_HEADER || 'the socket address'})`
+    : 'rate limits OFF (RATE_LIMITS=off)',
+);
+log(env.ALERT_WEBHOOK_URL ? 'alerts → webhook' : 'alerts → log only (no ALERT_WEBHOOK_URL)');
+alert(
+  'server_started',
+  `server started${env.FLY_IMAGE_REF ? ` (${env.FLY_IMAGE_REF.split(':').pop()})` : ''}: ` +
+    [
+      flag('ALPHA') && 'alpha',
+      flag('ACCOUNTS_ONLY') && 'accounts only',
+      flag('INVITES_REQUIRED') && 'invites',
+      flag('STUDIO') && `studio ${Math.round(studioShare * 100)}%`,
+      agentSeater ? 'agent service' : 'scripted agents',
+      sql ? 'postgres' : 'jsonl',
+    ]
+      .filter(Boolean)
+      .join(', '),
+);
 if (fill !== null) log(`DEV bot fill after ${fill}ms`);
 
 const stop = async () => {
   log('shutting down; running matches are marked aborted');
   await server.close();
   await sql?.close();
+  alerts.close();
   process.exit(0);
 };
 process.on('SIGINT', stop);
