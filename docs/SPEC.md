@@ -114,6 +114,8 @@ Rules for all agents:
 - Makers may add their agent to a private party ("play with your agent"). Such matches are tagged `owner_present` and excluded from detection metrics and H, and the maker's own seat is never training data: they know one seat's role.
 - Makers see aggregates only (matches, how often labeled human, average score, strikes), never transcripts, match ids or other players.
 - A line blocked by the safety filter is a strike against that version; three strikes pause the agent.
+- Operators can suspend, rename or retire any Studio agent, with a recorded reason. A suspended agent plays
+  nowhere and only an operator can lift the suspension; saving a new version does not.
 
 **Humanlikeness** per agent version: H = P(labeled human | agent) / P(labeled human | human), computed from non-party matches. H = 1 means indistinguishable.
 

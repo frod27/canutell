@@ -1003,6 +1003,67 @@ questions:
 - **Suite:** 295 TypeScript tests pass on both PGlite and Postgres 16. 74 Python tests pass; ruff and
   pyright are clean. The simulator ran 10,000 matches per mode with 0 invariant violations.
 
+## 2026-11-03 — Pre-launch hardening (rate limits, Studio moderation, alerts)
+
+- **Question.** The plan and migration 0007 in `docs/proposals/hardening.md`, plus two open questions:
+  how a moderator holds a Studio agent, and where alerts go.
+- **Decision.** The owner approved the plan and migration 0007 as written, with the recommendation for
+  each question:
+  - a new status, `suspended`, that only an operator can lift;
+  - alerts to a Slack or Discord incoming webhook (`ALERT_WEBHOOK_URL`).
+- **Reason.** Before the alpha opens and before Studio is switched on, anyone can script sign-ups (invite
+  guessing), and player-written names reach every Reveal. Problems were only visible to someone
+  reading `fly logs`.
+
+### How it was built
+
+- **Rate limits** (`apps/server/src/rate-limit.ts`): in-memory token buckets, since the server is one
+  machine.
+  - The client IP comes from `CLIENT_IP_HEADER` (`fly-client-ip` on Fly, whose proxy overwrites it). A
+    request without it came over the private network (the agent service) or from in-process bots and is
+    never limited. Without the setting, the socket address is used and loopback is exempt.
+  - Only the _start_ of a sign-up or sign-in counts (`…/options`); the matching `…/verify` needs a
+    single-use flow from that start anyway.
+  - Studio writes are limited per account, so changing networks doesn't help.
+  - A refused socket closes with 1013. The web client then waits 30 seconds instead of 1.5 before
+    reconnecting, so it doesn't spend the limit on retries.
+  - IPs are never logged or stored. A bucket is dropped once it has refilled, so an IP stays in memory
+    at most for its rule's window plus a one-minute sweep.
+- **The leaderboard is cached for 60 seconds.** It runs a query per version, so it was the cheapest
+  public endpoint to overload.
+- **Moderation** (`pnpm ops:studio`):
+  - `suspended` reuses `paused_reason` for the text the maker sees, prefixed "Suspended by the
+    moderators:". Unsuspending returns the agent to `paused` if its current version already has three
+    strikes, otherwise to `active`.
+  - A name taken away by a rename can't be chosen by a new agent: `createStudioAgent` also checks
+    `studio_moderation.old_name`.
+  - A suspended agent still counts toward its maker's three agents, so suspension can't be dodged by
+    making a fresh one with a free slot.
+- **Alerts** (`apps/server/src/alerts.ts`):
+  - Throttled per kind: at most one per 10 minutes, and a summary of the suppressed ones when the
+    window closes.
+  - Bodies carry `text` and `content`, so one URL works for Slack or Discord.
+  - Messages are written without player ids. A scrubber also masks anything shaped like a player id,
+    session token or IP, as a backstop.
+  - A match aborted by shutdown doesn't alert; one aborted by an engine error does.
+
+### Hardening acceptance results
+
+- **Load test** with the production rate limits on and one client IP per account:
+  `pnpm loadtest --matches 200 --mode both --store postgres --agents python --alpha --studio --limits`.
+  - 400 matches, 0 violations, 0 requests or sockets refused.
+  - Studio share: 55% in full mode, 56% in quick mode.
+- **Browser e2e:** 31 of 31 checks pass. New checks: an operator suspends "Marlowe" with
+  `ops:studio`; the maker's Studio page shows the reason and no Edit button; `ops:studio show` lists the
+  action without the maker's id.
+- **Suite:** all TypeScript tests pass on both PGlite and Postgres 16, including 16 new ones:
+  - rate limiter: refill, per-key isolation, eviction, memory cap, `RATE_LIMITS` parsing;
+  - server: 429 with `Retry-After` per IP, 1013 sockets, internal traffic exempt, Studio per account;
+  - moderation: suspension blocks public and private play and new versions; unsuspend; rename;
+    append-only record, no owner ids;
+  - alerts: payload shape, scrubbing, throttling and summaries; server alerts for agent-service
+    fallback and strike pauses.
+
 ---
 
 ## Later
@@ -1047,14 +1108,20 @@ Noted while building Phase 1; out of scope for this phase.
 - **Phone verification** (SPEC T2 alternative). It needs an SMS provider and stores a phone number in
   `identities` only.
 - **Account recovery** for players who lose every passkey (there is no email).
-- **Rate limiting** of `/api/auth/*` per client, beyond the in-memory flow cap.
+- ~~**Rate limiting** of `/api/auth/*` per client~~ (done: pre-launch hardening).
+- **Shared rate limits** (e.g. in Postgres or Redis) once there is more than one server machine.
+- **Player reports of Studio agents** ("report this name" at Reveal) feeding `ops:studio`. Today
+  moderation relies on the operator reading `ops:studio recent`.
+- **Account-level Studio bans,** if suspending single agents proves not enough.
+- **Alerts from the agent service itself** (Claude API errors, spend). Today its failures show up as
+  `agent_fallback` alerts on the game server.
 - **A reviewer UI** for flagged seats (today: `pnpm db:integrity`).
 - **Tuning integrity thresholds** against labelled alpha data, and measuring false positives.
 - **Re-asking age** when an under-18 account has since turned 18 (a support process; the app can't verify).
 - **Game-night reminders** (web push or email digests). Today the reminder is posted by hand.
 - **More than one server machine.** It needs sticky routing by match, and persisted sessions to resume
   matches across restarts.
-- **Error alerting** on `DB WRITE FAILED` and on aborted matches, beyond `fly logs`.
+- ~~**Error alerting** on `DB WRITE FAILED` and on aborted matches~~ (done: pre-launch hardening).
 - **An ops dashboard page,** if `pnpm ops:report` proves too slow to read weekly.
 - **Storing queue waits,** if the alpha shows they matter (they are in the logs today).
 - **Player-built agents, bring-your-own runtime (option B of Phase 7).** The hosted Studio shipped in

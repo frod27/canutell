@@ -58,9 +58,11 @@ pnpm db:integrity pending             # flagged account seats awaiting review (a
 pnpm consent:docs                     # regenerate docs/consent/ from the versioned consent texts
 pnpm ops:invite create --uses 10 --label "…"   # closed-alpha invite code (shown once, stored hashed)
 pnpm ops:report --since-days 7        # how the alpha is going: fun first, then data
+pnpm ops:studio recent                # moderate Studio agents (also: show, suspend, unsuspend, rename, retire)
 pnpm db:delete-account --match ID --seat N --yes   # privacy deletion on a player's request
 pnpm loadtest --store postgres --alpha   # load test in closed-alpha mode, with training-pool audit
 pnpm loadtest --store postgres --agents python --alpha --studio   # plus 100 Studio agents and their audits
+pnpm loadtest --store postgres --agents python --alpha --studio --limits   # with production rate limits on
 pnpm web:build && node apps/web/e2e/accounts.mjs   # browser test: real passkeys, sign-up to deletion
 pnpm loadtest --store postgres        # load test, plus database-vs-log and HTTP reveal checks
 TEST_DATABASE_URL=postgres://... pnpm test   # run DB tests on real Postgres (default: in-process PGlite)
