@@ -913,6 +913,98 @@ questions:
 
 ---
 
+## 2026-11-03 — Phase 7 (player-made agents: Agent Studio)
+
+### Phase 7 plan, migration 0006 and SPEC changes [user]
+
+- **Question.** The plan, migration 0006 and the SPEC changes in `docs/proposals/phase-7.md`, plus three
+  open questions.
+- **Decision.** The owner approved the plan, migration and SPEC changes as written, with every
+  recommendation:
+  1. **Hosted Studio first.** Players set a name, traits and a style hint; our agent service runs the
+     agent. Bring-your-own runtimes come later.
+  2. **The private "play with your agent" mode is included,** tagged `owner_present`. It is out of
+     detection metrics and H, and the maker's own seat is out of the training pool.
+  3. **50% of public agent seats stay `baseline-1`,** as a control.
+- **Rollout.** Studio is turned on in production only after the first 100 `baseline-1`-only alpha
+  matches.
+- **Follow-up.** Done:
+  - SPEC: the disclosure line, the Studio class and maker rules, and the data-use exclusion.
+  - The disclosure constant in `packages/protocol`.
+
+### Differences between migration 0006 and the approved proposal [engine, flagged for review]
+
+- **The training view.** The approved rule "the maker's own seat in a match with their agent is never
+  training data" needed a change to `training_seats`, which the proposal's SQL left out. Migration 0006
+  recreates the view with one more condition, computed from the seats themselves: the player owns a
+  Studio agent seated in the same match. It does not rely on the `owner_present` flag. Same columns, so
+  `training_decisions` and the export grant carry over.
+- **Race-safe revokes** for the new tables, as in 0003 and 0004.
+
+### Agent Studio in practice [engine]
+
+- **One agent service runs everything.** It runs `baseline-1` and every Studio version. A Studio seat
+  carries the maker's traits (mapped onto `Persona`; "unpredictability" spans the same softmax
+  temperature range as a drawn persona) and the style hint.
+- **The style hint goes below the rules,** inside `<style>` tags, with angle brackets neutralised. The
+  maker never changes timing, the safety filter, or the seat view.
+- **Names.**
+  - 3–24 letters, numbers and simple punctuation.
+  - Refused: names that look like a person's full name (two or more capitalised words, e.g. "Jane Doe"),
+    contact details or links.
+  - **This is a heuristic.** It can't catch a single-word real name; moderation and strikes are the
+    backstop.
+- **Style hints:** up to 300 characters, no links or contact details, masked like chat.
+- **Seating.**
+  - The draw happens inside the constant formation delay, so it reveals nothing.
+  - Each public agent seat goes to a Studio agent with probability `STUDIO_SHARE` (0.5), but only if an
+    eligible agent exists. Eligible means active, under 20 public matches in 24 hours, and its maker not
+    in the match. Otherwise the seat is `baseline-1`, so the realised share can sit below the setting.
+  - An agent never takes two seats in one match.
+  - Parties get Studio agents only through the maker's own "add my agent". Private matches have no
+    quota; the party size bounds them.
+- **Strikes.** The agent service reports each line its safety filter blocks for a Studio seat to
+  `POST /internal/agent-strikes`, with the shared agent secret. It identifies the seat by the token the
+  server issued, never by match ids. Three strikes pause the agent; saving a new version resumes it.
+- **Studio off (`STUDIO=0`):** makers can still build agents, but nothing is seated, and adding an
+  agent to a party is refused.
+- **Makers see aggregates only:** matches, how often labelled human (by consented T2+ voters in
+  non-party, non-dev matches), average score, strikes, and today's quota use.
+- **The leaderboard** lists versions with 30+ labels. Names are public at Reveal and on the leaderboard;
+  makers' identities never are.
+
+### Phase 7 acceptance results
+
+- **Load test:** `pnpm loadtest --matches 200 --mode both --store postgres --agents python --alpha --studio`
+  (local Postgres 16, the real Python agent service, 100 Studio agents per mode whose makers also play)
+  passed with 0 violations over 400 matches:
+  - full mode: 112 of 199 public agent seats (56%) went to Studio agents;
+  - quick mode: 102 of 212 (48%).
+
+  Both are within 4 standard deviations of the 50% setting.
+
+- **Audited per match,** on top of the Phase 3–6 checks:
+  - no maker was ever seated with their own agent;
+  - no agent took two seats in one match;
+  - the `studio_agents` flag matches the seats exactly;
+  - every agent seat was `baseline-1` or a Studio version;
+  - no agent seat entered the training pool, and the pool still equals the independent computation
+    (167 and 165 seats);
+  - a maker's view carries no ids.
+- **Browser e2e** (real passkeys and the real agent service): 29 of 29 checks pass.
+  - The maker builds "Marlowe" ("Jane Doe" is refused), with the Studio terms recorded.
+  - They add it to a private party and play to Reveal, where it is named "Marlowe v1, made by a
+    player".
+  - The match is tagged `owner_present` and `studio_agents`, and the maker's seat is out of the pool.
+  - Deleting the account retires the agent.
+- **Fixed during acceptance:**
+  - the e2e test peeked at the game-night banner before its request finished (it now waits);
+  - the quick-mode summary counted both modes' agents.
+- **Suite:** 295 TypeScript tests pass on both PGlite and Postgres 16. 74 Python tests pass; ruff and
+  pyright are clean. The simulator ran 10,000 matches per mode with 0 invariant violations.
+
+---
+
 ## Later
 
 Noted while building Phase 1; out of scope for this phase.
@@ -965,7 +1057,8 @@ Noted while building Phase 1; out of scope for this phase.
 - **Error alerting** on `DB WRITE FAILED` and on aborted matches, beyond `fly logs`.
 - **An ops dashboard page,** if `pnpm ops:report` proves too slow to read weekly.
 - **Storing queue waits,** if the alpha shows they matter (they are in the logs today).
-- **Player-built agents ("bring your own agent"), owner idea 2026-11-03.** Players connect their own
+- **Player-built agents, bring-your-own runtime (option B of Phase 7).** The hosted Studio shipped in
+  Phase 7; running players' own programs is still open. Players connect their own
   agents through the public protocol, either to play with them or to send them to play against others.
   It needs its own proposal before any build. Open design points:
   - **Chat leaves the platform.** Human chat would reach third-party servers in real time. That needs a

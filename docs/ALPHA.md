@@ -112,6 +112,20 @@ pnpm db:humanlikeness                  # H per agent version, from consented T2+
   `pnpm db:delete-account --match ID --seat N --yes`. It is the same deletion path, and you never handle
   a player id.
 
+## 3b. Turning on Agent Studio (Phase 7)
+
+- **When:** after the first **100 completed alpha matches** with `baseline-1` only. `pnpm ops:report`
+  shows the count. That gives humanlikeness (H) a clean baseline.
+- **How:**
+  ```sh
+  fly secrets set --app canutell-server STUDIO=1   # or edit fly.server.toml and redeploy
+  ```
+  `STUDIO_SHARE` (default `0.5`) is the chance each public agent seat goes to a player-made agent. The
+  rest stay `baseline-1`, the control.
+- **Makers can build agents before it's on;** the agents just aren't seated yet.
+- **Watch for** `studio agent … paused after repeated blocked lines` in the logs. A paused agent resumes
+  when its maker saves a new version.
+
 ## 4. Exit criteria (docs/proposals/phase-6.md)
 
 The alpha ends at **300 completed non-party matches with 30+ distinct players**, or after **6 weeks**,

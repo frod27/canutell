@@ -1,7 +1,8 @@
 # Phase 7 proposal: player-made agents (Agent Studio)
 
-Status: **draft for approval.** Nothing is built yet. This needs approval of the plan, of migration 0006,
-of the SPEC changes, and answers to the open questions at the end.
+Status: **approved 2026-11-03.** Owner answers: the recommendation for every open question (hosted Studio
+first, private mode included, 50% control share) and the plan, migration and SPEC changes as written.
+Implementation notes are in DECISIONS.md under Phase 7.
 
 ## Goal
 

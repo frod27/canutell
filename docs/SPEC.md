@@ -8,7 +8,7 @@ Gather clean, consented behavioral data, and use it to train agents that get pro
 
 ## Match structure
 
-- 6 seats. Each match seats 0, 1 or 2 agents (MVP: equal odds, configurable). The lobby states that the match may contain AI players.
+- 6 seats. Each match seats 0, 1 or 2 agents (MVP: equal odds, configurable). The lobby states: "This match may contain AI players, including agents made by other players."
 - Modes:
   - **Full:** 5 rounds, about 11.5 minutes.
   - **Quick:** 3 rounds, about 7 minutes.
@@ -99,12 +99,21 @@ Shows every seat's role and agent version, each player's ballot accuracy, final 
 | --- | --- | --- |
 | Baseline | A fast decision model picks from the phase's option set, with a confidence | LLM with a persona and style guide |
 | Mimic | Model trained on verified-human decision logs | LLM tuned on verified-human chat |
+| Studio | The Baseline decision model, with traits set by the player who made the agent | LLM with the maker's short style hint, always below the platform's rules |
 
 Rules for all agents:
 - Response timing is sampled from the human latency distribution for that phase.
 - Agents never claim to be a real person, never ask for personal information, and never invite anyone off-platform.
 - Agents connect through the same protocol as humans.
-- Agents are always revealed at match end.
+- Agents are always revealed at match end, Studio agents with their name.
+
+**Studio agents** are made by players and run by the platform (hosted, never on the maker's machines):
+- Each saved change is a new, immutable agent version; H is computed per version.
+- A maker sets a name, behaviour traits and a style hint. The maker never changes timing, safety or what the agent can see.
+- In public matches, a share of agent seats (default 50%) is always the platform's Baseline agent, as a control. A maker is never seated with their own agent, nor with a party member's.
+- Makers may add their agent to a private party ("play with your agent"). Such matches are tagged `owner_present` and excluded from detection metrics and H, and the maker's own seat is never training data: they know one seat's role.
+- Makers see aggregates only (matches, how often labeled human, average score, strikes), never transcripts, match ids or other players.
+- A line blocked by the safety filter is a strike against that version; three strikes pause the agent.
 
 **Humanlikeness** per agent version: H = P(labeled human | agent) / P(labeled human | human), computed from non-party matches. H = 1 means indistinguishable.
 
@@ -136,6 +145,8 @@ Agents trained here are never deployed outside CANUTELL.
   | Training (Mimic, agent timing) | T2+ at match time and now, active research consent |
   | Evaluation (H, detection metrics) | Voters who are T2+ with active research consent |
   | Research (other behavioral analyses) | T3, active research consent |
+
+  A maker's own seat in an `owner_present` match is never used, whatever their consent.
 
 - **T0 guests: nothing about the person is kept.** A guest seat is stored under a pseudonym that is new for each match, with no signals and no identity. Its actions stay in the match log only as context for the other seats' views, so their decisions remain replayable. A guest seat is never a training or evaluation target, and training exports replace chat text from any seat outside the training pool with a placeholder. A deleted account is treated the same way, after its identity, passkeys and sessions are erased.
 - **Automation signals,** logged per seat: input timing variance, paste events in chat, tab focus and blur, headless-browser fingerprints, and replies faster than reading time. Fingerprints are reduced to booleans; no raw fingerprint is stored. Flags lower trust by one level at once; a human reviewer clears (restoring the level) or confirms (T1). They never auto-ban, and play is never affected.

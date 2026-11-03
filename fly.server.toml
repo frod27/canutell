@@ -28,6 +28,10 @@ primary_region = "mad"
   CORS_ORIGIN = "https://canutell.com"
   AGENT_SERVICE_URL = "http://canutell-agents.internal:8790"
   AGENT_CALLBACK_URL = "ws://canutell-server.internal:8787"
+  # Agent Studio (Phase 7): turn on ("1") only after the first 100 baseline-only alpha matches, so H has a clean
+  # baseline. Makers can build agents before that; they just aren't seated.
+  STUDIO = "0"
+  STUDIO_SHARE = "0.5"
 
 [http_service]
   internal_port = 8787
